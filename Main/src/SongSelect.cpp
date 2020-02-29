@@ -9,6 +9,7 @@
 #include "TransitionScreen.hpp"
 #include "GameConfig.hpp"
 #include "SongFilter.hpp"
+#include "ChatOverlay.hpp"
 #include "CollectionDialog.hpp"
 #include <Audio/Audio.hpp>
 #include "lua.hpp"
@@ -86,7 +87,8 @@ public:
 		}
 		else
 		{
-			SDL_StopTextInput();
+			// XXX This seems to break nuklear so I commented it out
+			//SDL_StopTextInput();
 			g_gameWindow->OnTextInput.RemoveAll(this);
 			g_gameWindow->OnTextComposition.RemoveAll(this);
 			g_gameWindow->OnKeyRepeat.RemoveAll(this);
@@ -1279,6 +1281,8 @@ public:
 
 	void m_OnButtonPressed(Input::Button buttonCode)
 	{
+		if (m_multiplayer && m_multiplayer->GetChatOverlay()->IsOpen())
+			return;
 		if (m_suspended || m_collDiag.IsActive())
 			return;
 
@@ -1401,6 +1405,8 @@ public:
 
 	void m_OnButtonReleased(Input::Button buttonCode)
 	{
+		if (m_multiplayer && m_multiplayer->GetChatOverlay()->IsOpen())
+			return;
 		if (m_suspended || m_collDiag.IsActive())
 			return;
 
@@ -1460,6 +1466,10 @@ public:
 	}
 	virtual void OnKeyPressed(int32 key)
 	{
+		if (m_multiplayer &&
+				m_multiplayer->GetChatOverlay()->OnKeyPressedConsume(key))
+			return;
+
 		if (m_collDiag.IsActive())
 			return;
 
@@ -1600,6 +1610,8 @@ public:
 				m_collDiag.Tick(deltaTime);
 			}
 		}
+		if (m_multiplayer)
+			m_multiplayer->GetChatOverlay()->Tick(deltaTime);
 	}
 
 	virtual void Render(float deltaTime)
@@ -1624,6 +1636,9 @@ public:
 		{
 			m_collDiag.Render(deltaTime);
 		}
+
+		if (m_multiplayer)
+			m_multiplayer->GetChatOverlay()->Render(deltaTime);
 	}
 
     void TickNavigation(float deltaTime)
