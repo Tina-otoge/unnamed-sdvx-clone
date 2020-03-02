@@ -1541,7 +1541,7 @@ public:
 			{
 				m_selectionWheel->SelectRandom();
 			}
-			else if (key == SDLK_F8) // start demo mode
+			else if (key == SDLK_F8 && m_multiplayer == NULL) // start demo mode
 			{
 				DifficultyIndex* diff = m_mapDatabase.GetRandomDiff();
 
