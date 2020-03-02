@@ -802,7 +802,7 @@ void MultiplayerScreen::m_clearLuaMap()
 
 void MultiplayerScreen::MousePressed(MouseButton button)
 {
-	if (IsSuspended())
+	if (IsSuspended() || m_chatOverlay->IsOpen())
 		return;
 
 	lua_getglobal(m_lua, "mouse_pressed");
@@ -845,7 +845,9 @@ void MultiplayerScreen::Tick(float deltaTime)
 
 	// Lock mouse to screen when active
 	if (m_screenState == MultiplayerScreenState::ROOM_LIST && 
-		g_gameConfig.GetEnum<Enum_InputDevice>(GameConfigKeys::LaserInputDevice) == InputDevice::Mouse && g_gameWindow->IsActive())
+		g_gameConfig.GetEnum<Enum_InputDevice>(GameConfigKeys::LaserInputDevice) == InputDevice::Mouse &&
+        g_gameWindow->IsActive() &&
+        !m_chatOverlay->IsOpen())
 	{
 		if (!m_lockMouse)
 			m_lockMouse = g_input.LockMouse();
@@ -858,7 +860,7 @@ void MultiplayerScreen::Tick(float deltaTime)
 	}
 
 	// Change difficulty
-	if (m_hasSelectedMap)
+	if (m_hasSelectedMap && !m_chatOverlay->IsOpen())
 	{
 		if (g_input.GetButton(Input::Button::BT_0)) {
 			for (int i = 0; i < 2; i++) {
@@ -1150,7 +1152,7 @@ void MultiplayerScreen::m_OnButtonReleased(Input::Button buttonCode)
 
 void MultiplayerScreen::m_OnMouseScroll(int32 steps)
 {
-	if (IsSuspended())
+	if (IsSuspended() || m_chatOverlay->IsOpen())
 		return;
 
 	lua_getglobal(m_lua, "mouse_scroll");

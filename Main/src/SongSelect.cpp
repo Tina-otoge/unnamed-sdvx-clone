@@ -1450,6 +1450,9 @@ public:
 		if (m_suspended || m_collDiag.IsActive())
 			return;
 
+		if (m_multiplayer && m_multiplayer->GetChatOverlay()->IsOpen())
+			return;
+
 		if (m_settingsWheel->Active)
 		{
 			m_settingsWheel->AdvanceSelection(steps);
