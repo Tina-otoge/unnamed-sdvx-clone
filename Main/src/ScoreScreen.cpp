@@ -12,6 +12,8 @@
 #include "Shared/Time.hpp"
 #include "json.hpp"
 #include "CollectionDialog.hpp"
+#include "MultiplayerScreen.hpp"
+#include "ChatOverlay.hpp"
 
 class ScoreScreen_Impl : public ScoreScreen
 {
@@ -41,7 +43,7 @@ private:
 	bool m_removed = false;
 	bool m_hasScreenshot = false;
 	bool m_hasRendered = false;
-	bool m_multiplayer = false;
+    MultiplayerScreen* m_multiplayer = NULL;
 	String m_playerName;
 	String m_playerId;
 	String m_displayId;
@@ -79,6 +81,8 @@ private:
 	}
 	void m_OnButtonPressed(Input::Button button)
 	{
+		if (m_multiplayer && m_multiplayer->GetChatOverlay()->IsOpen())
+			return;
 		if (m_collDiag.IsActive())
 			return;
 
@@ -213,7 +217,7 @@ public:
 
 	}
 
-	ScoreScreen_Impl(class Game* game, bool multiplayer,
+	ScoreScreen_Impl(class Game* game, MultiplayerScreen* multiplayer,
 		String uid, Vector<nlohmann::json> const* multistats)
 	{
 		m_displayIndex = 0;
@@ -443,6 +447,10 @@ public:
 
 	virtual void OnKeyPressed(int32 key) override
 	{
+		if (m_multiplayer &&
+				m_multiplayer->GetChatOverlay()->OnKeyPressedConsume(key))
+			return;
+
 		if (m_collDiag.IsActive())
 			return;
 
@@ -479,6 +487,9 @@ public:
 		{
 			m_collDiag.Render(deltaTime);
 		}
+
+		if (m_multiplayer)
+			m_multiplayer->GetChatOverlay()->Render(deltaTime);
 	}
 	virtual void Tick(float deltaTime) override
 	{
@@ -493,6 +504,9 @@ public:
 			}
 			m_hasScreenshot = true;
 		}
+
+
+        
 
 		m_showStats = g_input.GetButton(Input::Button::FX_0);
 
@@ -517,6 +531,9 @@ public:
 		{
 			m_collDiag.Tick(deltaTime);
 		}
+
+		if (m_multiplayer)
+			m_multiplayer->GetChatOverlay()->Tick(deltaTime);
 	}
 
 	virtual void OnSuspend()
@@ -591,12 +608,12 @@ public:
 
 ScoreScreen* ScoreScreen::Create(class Game* game)
 {
-	ScoreScreen_Impl* impl = new ScoreScreen_Impl(game, false, String(""), nullptr);
+	ScoreScreen_Impl* impl = new ScoreScreen_Impl(game, NULL, String(""), nullptr);
 	return impl;
 }
 
-ScoreScreen* ScoreScreen::Create(class Game* game, String uid, Vector<nlohmann::json> const* stats)
+ScoreScreen* ScoreScreen::Create(class Game* game, String uid, Vector<nlohmann::json> const* stats, MultiplayerScreen* multi)
 {
-	ScoreScreen_Impl* impl = new ScoreScreen_Impl(game, true, uid, stats);
+	ScoreScreen_Impl* impl = new ScoreScreen_Impl(game, multi, uid, stats);
 	return impl;
 }
