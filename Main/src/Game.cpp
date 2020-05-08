@@ -31,6 +31,35 @@ extern "C"
 
 #include "GUI/HealthGauge.hpp"
 
+#include <fstream>
+#define NP_PATH "now_playing.txt"
+#define NP_SELECT_TEXT "Now selecting music..."
+
+void updateNpFile(const Ref<Beatmap> map)
+{
+    std::ofstream file(NP_PATH, std::ofstream::trunc);
+    BeatmapSettings settings = map->GetMapSettings();
+    static const std::vector<std::string> LEVEL_REPR = {"NOV", "ADV", "EXH", "MXM"};
+
+    if (!file.is_open())
+        return;
+    /*/1* */
+    file << settings.artist << " - " << settings.title << " "
+        << "[" << LEVEL_REPR[settings.difficulty] << " " << std::to_string(settings.level)
+        << "]" << std::endl;
+    /* */
+    file.close();
+}
+
+void cleanNpFile()
+{
+    std::ofstream file(NP_PATH, std::ofstream::trunc);
+    if (!file.is_open())
+        return;
+    file << NP_SELECT_TEXT << std::endl;
+    file.close();
+}
+
 // Try load map helper
 Ref<Beatmap> TryLoadMap(const String& path)
 {
@@ -219,6 +248,8 @@ public:
 		g_gameWindow->SetCursorVisible(true); 
 		g_input.OnButtonPressed.RemoveAll(this);
 		g_transition->OnLoadingComplete.RemoveAll(this);
+
+        cleanNpFile();
 	}
 
 
@@ -241,6 +272,8 @@ public:
 			Log("Failed to load map", Logger::Warning);
 			return false;
 		}
+
+        updateNpFile(m_beatmap);
 
 		// Enable debug functionality
 		if(g_application->GetAppCommandLine().Contains("-debug"))
