@@ -33,8 +33,10 @@ jobs:
               run: msbuild USC.sln -p:Configuration=Release /m /verbosity:minimal
             - name: Tests
               run: rm ./bin/Tests.*
+            - run: |	
+                mkdir -p ${{ github.workspace }}/artifact
             - name: Upload artifact
-              uses: actions/upload-artifact@master
+              uses: actions/upload-artifact@v2
               with:
                 name: Game
                 path: bin
