@@ -46,7 +46,7 @@ void updateNpFile(const Ref<Beatmap> map)
     /*/1* */
     file << settings.artist << " - " << settings.title << " "
         << "[" << LEVEL_REPR[settings.difficulty] << " " << std::to_string(settings.level)
-        << "]" << std::endl;
+        << "]    " << std::endl;
     /* */
     file.close();
 }
@@ -56,7 +56,7 @@ void cleanNpFile()
     std::ofstream file(NP_PATH, std::ofstream::trunc);
     if (!file.is_open())
         return;
-    file << NP_SELECT_TEXT << std::endl;
+    file << NP_SELECT_TEXT << "    " << std::endl;
     file.close();
 }
 
