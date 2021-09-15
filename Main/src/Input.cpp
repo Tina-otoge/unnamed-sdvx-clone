@@ -63,24 +63,10 @@ void Input::Init(Graphics::Window& wnd)
 	// Init controller mapping
 	if(m_laserDevice == InputDevice::Controller || m_buttonDevice == InputDevice::Controller)
 	{
-		const auto deviceId = g_gameConfig.GetBlob<16>(GameConfigKeys::Controller_DeviceID);
-		int deviceIndex = -1;
-
-		for (int32 i = 0; i < m_window->GetNumGamepads(); i++)
+		int32 deviceIndex = g_gameConfig.GetInt(GameConfigKeys::Controller_DeviceID);
+		if(deviceIndex >= m_window->GetNumGamepads())
 		{
-			auto id = SDL_JoystickGetDeviceGUID(i);
-			if (memcmp(deviceId.data(), id.data, 16) == 0)
-			{
-				deviceIndex = i;
-				break;
-			}
-		}
-
-
-
-		if(deviceIndex < 0)
-		{
-			Log("Could not find bound gamepad", Logger::Severity::Warning);
+			Logf("Out of range controller [%d], number of available controllers is %d", Logger::Severity::Error, deviceIndex, m_window->GetNumGamepads());
 		}
 		else
 		{
