@@ -14,7 +14,7 @@ public:
 	bool Init(class MapDatabase* songdb);
 	void Tick(float deltaTime);
 	void Render(float deltaTime);
-	void Open(const ChartIndex& song);
+	void Open(const ChartIndex* song);
 
 	//Call to start closing the dialog
 	void Close();
@@ -32,8 +32,8 @@ private:
 	void m_ChangeState();
 	void m_AdvanceSelection(int steps);
 	void m_OnButtonPressed(Input::Button button);
-	void m_OnKeyPressed(int32 key);
-	void m_OnEntryReturn(const WString& name);
+	void m_OnKeyPressed(SDL_Scancode code);
+	void m_OnEntryReturn(const String& name);
 
 	//Call when closing has been completed
 	void m_Finish();

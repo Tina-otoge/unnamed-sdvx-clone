@@ -14,15 +14,13 @@ public:
 	// Resets the playback of the map
 	// Must be called before any other function is called on this object
 	// returns false if the map contains no objects or timing or otherwise invalid
-	bool Reset(MapTime startTime = 0);
+	bool Reset(MapTime initTime = 0, MapTime start = 0);
 
 	// Updates the time of the playback
 	// checks all items that have been triggered between last time and this time
 	// if it is a new timing point, this is used for the new BPM
 	void Update(MapTime newTime);
 
-	// Modifyable array of all hittable objects, within -+'hittableObjectTreshold' of current time
-	Vector<ObjectState*>& GetHittableObjects();
 	MapTime hittableObjectEnter = 500;
 	MapTime hittableLaserEnter = 1000;
 	MapTime hittableObjectLeave = 500;
@@ -37,6 +35,8 @@ public:
 	// Gets all linear objects that fall within the given time range:
 	//	<curr - keepObjectDuration, curr + range>
 	Vector<ObjectState*> GetObjectsInRange(MapTime range);
+	ObjectState* GetFirstButtonOrHoldAfterTime(MapTime t, int lane);
+
 	// Duration for objects to keep being returned by GetObjectsInRange after they have passed the current time
 	MapTime keepObjectDuration = 1000;
 
@@ -83,6 +83,9 @@ public:
 	// Get interpolated top or bottom zoom as set by the map
 	float GetZoom(uint8 index);
 
+	// Checks if current manual tilt value is instant
+	bool CheckIfManualTiltInstant();
+
 	/* Playback events */
 	// Called when an object became within the 'hittableObjectTreshold'
 	Delegate<ObjectState*> OnObjectEntered;
@@ -94,7 +97,7 @@ public:
 	Delegate<HoldObjectState*> OnFXBegin;
 	// Called when an FX button with effect leaves
 	Delegate<HoldObjectState*> OnFXEnd;
-	
+
 	// Called when a new timing point becomes active
 	Delegate<TimingPoint*> OnTimingPointChanged;
 
@@ -119,6 +122,10 @@ private:
 
 	// Current map position of this playback object
 	MapTime m_playbackTime;
+
+	// Disregard objects outside of these ranges
+	MapTimeRange m_viewRange;
+
 	Vector<TimingPoint*> m_timingPoints;
 	Vector<ChartStop*> m_chartStops;
 	Vector<ObjectState*> m_objects;

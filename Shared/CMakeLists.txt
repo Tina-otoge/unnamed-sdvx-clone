@@ -36,7 +36,7 @@ source_group("" FILES ${PCH_FILES})
 enable_precompiled_headers("${SHARED_SRC}" ${PCH_SRC})
 
 add_library(Shared ${SHARED_SRC} ${PCH_FILES})
-target_compile_features(Shared PUBLIC cxx_std_14)
+target_compile_features(Shared PUBLIC cxx_std_17)
 target_include_directories(Shared PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(Shared PRIVATE
     ${SRCROOT}
@@ -45,3 +45,16 @@ target_include_directories(Shared PRIVATE
 )
 
 target_link_libraries(Shared lua)
+
+target_link_libraries(Shared ${Iconv_LIBRARIES})
+target_include_directories(Shared SYSTEM PRIVATE ${Iconv_INCLUDE_DIRS})
+
+target_link_libraries(Shared ${LibArchive_LIBRARIES})
+target_include_directories(Shared SYSTEM PRIVATE ${LibArchive_INCLUDE_DIRS})
+
+target_link_libraries(Shared cc-common)
+
+# Enable multiprocess compiling
+if(MSVC)
+    target_compile_options(Shared PRIVATE /MP)
+endif(MSVC)

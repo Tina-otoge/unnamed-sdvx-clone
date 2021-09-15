@@ -12,22 +12,30 @@ The following fields are available under the ``gameplay`` table:
     int level
     float progress // 0.0 at the start of a song, 1.0 at the end
     float hispeed
+    int hispeedAdjust // 0 = not adjusting, 1 = coarse (xmod) adjustment, 2 = fine (mmod) adjustment
     float bpm
-    float gauge
-	
-	//the following are all in the range 0.0 - 1.0
+    Gauge gauge
+    
+    // The following are all in the range 0.0 - 1.0
     float hiddenCutoff
     float suddenCutoff
     float hiddenFade
     float suddenFade
-	
+    
     bool autoplay
-    int gaugeType // 1 = hard, 0 = normal
     int comboState // 2 = puc, 1 = uc, 0 = normal
     bool[6] noteHeld // Array indicating wether a hold note is being held, in order: ABCDLR
     bool[2] laserActive // Array indicating if the laser cursor is on a laser, in order: LR
     ScoreReplay[] scoreReplays //Array of previous scores for the current song
     CritLine critLine // info about crit line and everything attached to it
+    
+    HitWindow hitWindow // This may be absent (== nil) for the default timing window (46 / 92 / 138 / 250ms)
+    bool multiplayer
+    // Multiplayer only, absent (== nil) in non-multiplay
+    string user_id
+    
+    // Practice mode only, absent (== nil) in non-practice
+    bool practice_setup // true: it's the setup, false: practicing now, nil: not in the practice mode
     
 Example:    
 
@@ -92,6 +100,30 @@ A ``Line`` contains the following fields:
     float y1 // start y coordinate
     float x2 // end x coordinate
     float y2 // end y coordinate
+
+Gauge
+*****
+A ``Gauge`` contains the following fields:
+
+.. code-block:: c
+    
+    int type // 0 = normal, 1 = hard. Should be defined in constants sometime
+    int options // type specific, such as difficulty level for the same gauge type if available
+    float value // current gauge value
+    char* name
+
+
+HitWindow
+*********
+A ``HitWindow`` contains the following fields:
+
+.. code-block:: c
+
+    int type // 0: expand-judge, 1: normal, 2: hard
+    int perfect
+    int good
+    int hold
+    int miss
 
 Calls made to lua
 *****************
@@ -212,3 +244,33 @@ These are all the possible states::
     3 = Hard Cleared
     4 = Full Combo
     5 = Perfect
+
+practice_start(mission_type, mission_threshold, mission_description)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Practice mode only) This is called when the practice is being started.
+``mission_type`` is the current mission type (one of None, Score, Grade, Miss, MissAndNear, and Gauge).
+``mission_threshold`` is the parameter value for the current mission.
+``mission_description`` is a textual description for the current mission, and is suitable for displaying.
+
+practice_end_run(playCount, successCount, isSuccessful, scoring)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Practice mode only) This is called when a run ("one loop") is finished.
+``playCount``, ``successCount``, ``isSuccessful`` are self-explationary.
+``scoring`` is a table containing informations on the current run with the following fields.
+
+.. code-block:: c
+
+    int score
+    int perfects
+    int goods
+    int misses
+    int medianHitDelta
+    int meanHitDelta
+    int medianHitDeltaAbs
+    int meanHitDeltaAbs
+
+``score`` changes depending on current score display setting.
+
+practice_end(playCount, successCount)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Practice mode only) This is called when the practice setup is entered again after practicing.

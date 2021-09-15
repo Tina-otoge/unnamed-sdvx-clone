@@ -7,12 +7,22 @@
 *.exe
 *.a
 
+# Memory dump files
+*.dmp
+
 # Game files
 bin/songs/*
-maps.db
+maps.db*
 bin/Main.cfg
 bin/screenshots
 bin/log*
+bin/skins/*
+!bin/skins/Default
+bin/skins/Default/skin.cfg
+bin/skins/Default/nautica.json
+bin/replays
+bin/profiles
+bin/preview
 
 # Intermediate Files
 x64
@@ -45,8 +55,11 @@ CMakeCache.txt
 CMakeFiles
 Makefile
 !docs/Makefile
+
 # Not adding photoshop source files for textures
 *.psd
 
 # Document build files
 docs/build
+docs/source/_build
+

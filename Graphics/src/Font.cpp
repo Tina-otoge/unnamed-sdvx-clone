@@ -177,13 +177,13 @@ namespace Graphics
 
 	class Font_Impl : public FontRes
 	{
+		OpenGL* m_gl;
 		FT_Face m_face;
 		Buffer m_data;
 
 		Map<uint32, FontSize*> m_sizes;
 		uint32 m_currentSize = 0;
 
-		OpenGL* m_gl;
 
 		friend class TextRes;
 	public:
@@ -199,7 +199,10 @@ namespace Graphics
 			}
 			m_sizes.clear();
 			if (m_face)
+			{
 				FT_Done_Face(m_face);
+				m_face = nullptr;
+			}
 		}
 		bool Init(const String& assetPath)
 		{
@@ -261,7 +264,7 @@ namespace Graphics
 			TextRes* ret = new TextRes();
 			ret->mesh = MeshRes::Create(m_gl);
 
-			float monospaceWidth = size->GetCharInfo(L'_').advance;
+			float monospaceWidth = size->GetCharInfo(L'_').advance * 1.4f;
 
 			Vector<TextVertex> vertices;
 			Vector2 pen;
@@ -269,7 +272,7 @@ namespace Graphics
 			{
 				const CharInfo& info = size->GetCharInfo(c);
 
-				if(info.coords.size.x != 0 && info.coords.size.y != 0)
+				if(c != L'\n' && c != L'\t' && info.coords.size.x != 0 && info.coords.size.y != 0)
 				{
 					Vector2 corners[4];
 					corners[0] = Vector2(0, 0);
@@ -327,11 +330,13 @@ namespace Graphics
 
 			ret->size.y += size->lineHeight;
 
+			const CharInfo& a = size->GetCharInfo(L'0');
+			ret->size.z = a.topOffset;
 			ret->fontSize = size;
 			ret->mesh->SetData(vertices);
 			ret->mesh->SetPrimitiveType(PrimitiveType::TriangleList);
 
-			Text textObj = Ref<TextRes>(ret);
+			Text textObj = Utility::MakeRef(ret);
 			// Insert into cache
 			size->cache.AddText(str, textObj);
 			return textObj;
@@ -355,11 +360,11 @@ namespace Graphics
 	bool FontRes::InitLibrary()
 	{
 		ProfilerScope $("Font library initialization");
-		if(!FT_Init_FreeType(&library) == FT_Err_Ok)
+		if(FT_Init_FreeType(&library) != FT_Err_Ok)
 			return false;
 
 		if(!LoadFallbackFont())
-			Log("Failed to load embedded fallback font", Logger::Error);
+			Log("Failed to load embedded fallback font", Logger::Severity::Error);
 
 		return true;
 	}

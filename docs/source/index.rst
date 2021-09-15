@@ -21,11 +21,15 @@ Contents:
    songwheel
    filterwheel
    settingswheel
+   chalwheel
+   challengeresult
    skinsettings
    http
    bgfg
    collectiondialog
    shadedmesh
+   track
+   challenges
 
 
 Indices and tables

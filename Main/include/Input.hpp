@@ -4,7 +4,7 @@
 DefineEnum(InputDevice,
 	Keyboard,
 	Mouse,
-	Controller);
+	Controller)
 
 typedef Ref<int32> MouseLockHandle;
 
@@ -27,7 +27,7 @@ public:
 		LS_1Neg, // Right laser-	(<----|)
 		LS_1Pos, // Right laser+
 		Back,
-		Length);
+		Length)
 
 	~Input();
 	void Init(Graphics::Window& wnd);
@@ -48,8 +48,8 @@ public:
 	MouseLockHandle LockMouse();
 
 	// Event handlers
-	virtual void OnKeyPressed(int32 key);
-	virtual void OnKeyReleased(int32 key);
+	virtual void OnKeyPressed(SDL_Scancode code);
+	virtual void OnKeyReleased(SDL_Scancode code);
 	virtual void OnMouseMotion(int32 x, int32 y);
 
 	// Request laser input state
@@ -86,6 +86,7 @@ private:
 	float m_prevLaserStates[2] = { 0.0f };
 	float m_absoluteLaserStates[2] = { 0.0f };
 	float m_comboHoldTimer = 0.0f;
+	float m_laserDirections[2] = { 1.0f };
 
 	// Keyboard bindings
 	Multimap<int32, Button> m_buttonMap;

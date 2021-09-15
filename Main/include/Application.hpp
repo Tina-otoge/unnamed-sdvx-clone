@@ -1,13 +1,12 @@
 #pragma once
-#include <Audio/Sample.hpp>
-#include <Shared/Jobs.hpp>
-#include <Shared/Thread.hpp>
 #include "SkinHttp.hpp"
+#include "SkinIR.hpp"
+#include "Scoring.hpp"
 
 #define DISCORD_APPLICATION_ID "514489760568573952"
 
 extern class OpenGL* g_gl;
-extern class GUIState g_guiState;
+extern struct GUIState g_guiState;
 extern class Graphics::Window* g_gameWindow;
 extern float g_aspectRatio;
 extern Vector2i g_resolution;
@@ -16,6 +15,8 @@ extern class JobSheduler* g_jobSheduler;
 extern class Input g_input;
 extern class SkinConfig* g_skinConfig;
 extern class TransitionScreen* g_transition;
+
+class SharedTexture;
 
 class Application
 {
@@ -30,10 +31,12 @@ public:
 		bool loaded = false;
 		Job loadingJob;
 	};
+
+
 	void ApplySettings();
 	// Runs the application
 	int32 Run();
-	
+
 	void SetCommandLine(int32 argc, char** argv);
 	void SetCommandLine(const char* cmdLine);
 
@@ -69,15 +72,21 @@ public:
 	Graphics::Font LoadFont(const String& name, const bool& external = false);
 	int LoadImageJob(const String& path, Vector2i size, int placeholder, const bool& web = false);
 	void SetScriptPath(lua_State* L);
+
+
+	// Called when a pcall fails, returns true if the script was reloaded
+	bool ScriptError(const String& name, lua_State* L);
+
 	lua_State* LoadScript(const String& name, bool noError = false);
-	void ReloadScript(const String& name, lua_State* L);
-	void LoadGauge(bool hard);
-	void DrawGauge(float rate, float x, float y, float w, float h, float deltaTime);
-	int FastText(String text, float x, float y, int size, int align);
-	float GetAppTime() const { return m_lastRenderTime; }
+	bool ReloadScript(const String& name, lua_State* L);
+
+	void WarnGauge();
+	int FastText(String text, float x, float y, int size, int align, const Color& color = Color::White);
+	float GetAppTime() const { return m_appTime; }
 	float GetRenderFPS() const;
 	Material GetFontMaterial() const;
 	Material GetGuiTexMaterial() const;
+	Material GetGuiFillMaterial() const;
 	Transform GetGUIProjection() const;
 	Transform GetCurrentGUITransform() const;
 	Rect GetCurrentGUIScissor() const;
@@ -87,8 +96,8 @@ public:
 	// -1 if no sample exists, 0 if stopped, 1 if playing
 	int IsNamedSamplePlaying(String name);
 	void ReloadSkin();
+	bool ReloadConfig(const String& profile = "");
 	void DisposeLua(lua_State* state);
-	void SetGaugeColor(int i, Color c);
 	void DiscordError(int errorCode, const char* message);
 	void DiscordPresenceMenu(String name);
 	void DiscordPresenceMulti(String secret, int partySize, int partyMax, String id);
@@ -96,6 +105,7 @@ public:
 	void JoinMultiFromInvite(String secret);
 	void SetUpdateAvailable(const String& version, const String& url, const String& download);
 	void RunUpdater();
+	void CheckForUpdate();
 	void ForceRender();
 	void SetLuaBindings(struct lua_State* state);
 	struct NVGcontext* GetVGContext();
@@ -104,17 +114,24 @@ public:
 	//else: index 0 = url, index 1 = version
 	Vector<String> GetUpdateAvailable();
 
+	AutoplayInfo* autoplayInfo = nullptr;
+	Map<String, Ref<SharedTexture>> sharedTextures;
+
 private:
-	bool m_LoadConfig();
+	bool m_LoadConfig(String profileName = "");
+	void m_UpdateConfigVersion();
 	void m_SaveConfig();
 	void m_InitDiscord();
 	bool m_Init();
 	void m_MainLoop();
 	void m_Tick();
 	void m_Cleanup();
-	void m_OnKeyPressed(int32 key);
-	void m_OnKeyReleased(int32 key);
+	void m_OnKeyPressed(SDL_Scancode code);
+	void m_OnKeyReleased(SDL_Scancode code);
+	void m_UpdateWindowPosAndShape();
+	void m_UpdateWindowPosAndShape(int32 monitorId, bool fullscreen, bool ensureInBound);
 	void m_OnWindowResized(const Vector2i& newSize);
+	void m_OnWindowMoved(const Vector2i& newPos);
 	void m_OnFocusChanged(bool focused);
 	void m_unpackSkins();
 
@@ -126,15 +143,17 @@ private:
 	Material m_fontMaterial;
 	Material m_fillMaterial;
 	Material m_guiTex;
-	class HealthGauge* m_gauge;
 	Map<String, CachedJacketImage*> m_jacketImages;
 	String m_lastMapPath;
 	Thread m_updateThread;
+	Thread m_fontBakeThread;
 	class Beatmap* m_currentMap = nullptr;
 	SkinHttp m_skinHttp;
+	SkinIR m_skinIR;
 
-	float m_lastRenderTime;
 	float m_deltaTime;
+	float m_fpsTargetSleepMult = 1.0f;
+	float m_appTime;
 	bool m_allowMapConversion;
 	bool m_hasUpdate = false;
 	bool m_showFps = false;
@@ -152,6 +171,7 @@ private:
 	String m_multiRoomId;
 	int m_multiRoomSize = 0;
 	int m_multiRoomCount = 0;
+	bool m_gaugeRemovedWarn = true;
 };
 
 class JacketLoadingJob : public JobBase
@@ -168,3 +188,12 @@ public:
 };
 
 void __discordJoinGame(const char* joins);
+
+class SharedTexture {
+public:
+	SharedTexture() = default;
+	~SharedTexture();
+	bool Valid();
+	int nvgTexture = 0;
+	Texture texture;
+};

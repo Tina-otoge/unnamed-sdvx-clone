@@ -67,8 +67,8 @@ namespace Graphics
 				m_changeNotification = INVALID_HANDLE_VALUE;
 			}
 
-			String rootFolder = Path::RemoveLast(m_sourcePath);
-			m_changeNotification = FindFirstChangeNotificationA(*rootFolder, false, FILE_NOTIFY_CHANGE_LAST_WRITE);
+			WString rootFolder = Utility::ConvertToWString(Path::RemoveLast(m_sourcePath));
+			m_changeNotification = FindFirstChangeNotificationW(*rootFolder, false, FILE_NOTIFY_CHANGE_LAST_WRITE);
 #endif
 		}
 
@@ -100,7 +100,7 @@ namespace Graphics
 				int s = 0;
 				glGetShaderInfoLog(programOut, sizeof(infoLogBuffer), &s, infoLogBuffer);
 
-				Logf("Shader program compile log for %s: %s", Logger::Error, m_sourcePath, infoLogBuffer);
+				Logf("Shader program compile log for %s: %s", Logger::Severity::Error, m_sourcePath, infoLogBuffer);
 				return false;
 			}
 
@@ -147,7 +147,7 @@ namespace Graphics
 				int s = 0;
 				glGetProgramInfoLog(programOut, sizeof(infoLogBuffer), &s, infoLogBuffer);
 
-				Logf("Shader program compile log for %s: %s", Logger::Error, m_sourcePath, infoLogBuffer);
+				Logf("Shader program compile log for %s: %s", Logger::Severity::Error, m_sourcePath, infoLogBuffer);
 				return false;
 			}
 
@@ -162,7 +162,7 @@ namespace Graphics
 		
 #endif
 
-		bool UpdateHotReload()
+		bool UpdateHotReload() override
 		{
 #ifdef _WIN32
 			if(m_changeNotification != INVALID_HANDLE_VALUE)
@@ -201,7 +201,7 @@ namespace Graphics
 			return LoadProgram(m_prog);
 		}
 #ifndef EMBEDDED
-		virtual void Bind()
+		void Bind() override
 		{
 			if(m_gl->m_activeShaders[(size_t)m_type] != this)
 			{
@@ -209,11 +209,11 @@ namespace Graphics
 				m_gl->m_activeShaders[(size_t)m_type] = this;
 			}
 		}
-		virtual bool IsBound() const
+		bool IsBound() const override
 		{
 			return m_gl->m_activeShaders[(size_t)m_type] == this;
 		}
-		virtual uint32 GetLocation(const String& name) const
+		uint32 GetLocation(const String& name) const override
 		{
 			return glGetUniformLocation(m_prog, name.c_str());
 		}
@@ -271,7 +271,7 @@ namespace Graphics
 			return m_prog;
 		}
 
-		String GetOriginalName() const
+		String GetOriginalName() const override
 		{
 			return m_sourcePath;
 		}

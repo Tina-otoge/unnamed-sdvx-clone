@@ -44,6 +44,10 @@ struct BeatmapSettings
 	float slamVolume = 1.0f;
 	float laserEffectMix = 1.0f;
 	float musicVolume = 1.0f;
+
+	// BPM Override for mmod calculation
+	float speedBpm = -1.0f;
+
 	EffectType laserEffectType = EffectType::PeakingFilter;
 };
 
@@ -93,6 +97,14 @@ public:
 	// Retrieves audio effect settings for a given filter effect id
 	AudioEffect GetFilter(EffectType type) const;
 
+	// Get the timing of the last (non-event) object
+	MapTime GetLastObjectTime() const;
+
+	// Measure -> Time
+	MapTime GetMapTimeFromMeasureInd(int measure) const;
+	// Time -> Measure
+	int GetMeasureIndFromMapTime(MapTime time) const;
+
 private:
 	bool m_ProcessKShootMap(BinaryStream& input, bool metadataOnly);
 	bool m_Serialize(BinaryStream& stream, bool metadataOnly);
@@ -108,5 +120,4 @@ private:
 	Vector<String> m_samplePaths;
 	Vector<String> m_switchablePaths;
 	BeatmapSettings m_settings;
-	
 };

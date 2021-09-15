@@ -1,6 +1,9 @@
 #include "stdafx.h"
 #include "KShootMap.hpp"
+
 #include "Shared/Profiling.hpp"
+#include "Shared/StringEncodingDetector.hpp"
+#include "Shared/StringEncodingConverter.hpp"
 
 String KShootTick::ToString() const
 {
@@ -62,6 +65,92 @@ const KShootBlock& KShootMap::TickIterator::GetCurrentBlock() const
 	return *m_currentBlock;
 }
 
+bool ParseKShootCourse(BinaryStream& input, Map<String, String>& settings, Vector<String>& charts)
+{
+	StringEncoding chartEncoding = StringEncoding::Unknown;
+
+	// Read Byte Order Mark
+	uint32_t bom = 0;
+	input.Serialize(&bom, 3);
+
+	// If the BOM is not present, the chart might not be UTF-8.
+	// This is forbidden by the spec, but there are old charts which did not use UTF-8. (#314)
+	if (bom == 0x00bfbbef)
+	{
+		chartEncoding = StringEncoding::UTF8;
+	}
+	else
+	{
+		input.Seek(0);
+	}
+
+	uint32_t lineNumber = 0;
+	String line;
+	static const String lineEnding = "\r\n";
+
+	// Parse header (encoding-agnostic)
+	while(TextStream::ReadLine(input, line, lineEnding))
+	{
+		line.Trim();
+		lineNumber++;
+		if(line == "--")
+		{
+			break;
+		}
+		
+		String k, v;
+		if (line.empty())
+			continue;
+		if (line.substr(0, 2).compare("//") == 0)
+			continue;
+		if(!line.Split("=", &k, &v))
+			return false;
+
+		settings.FindOrAdd(k) = v;
+	}
+
+	if (chartEncoding == StringEncoding::Unknown)
+	{
+		chartEncoding = StringEncodingDetector::Detect(input, 0, input.Tell());
+
+		if (chartEncoding != StringEncoding::Unknown)
+			Logf("Course encoding is assumed to be %s", Logger::Severity::Info, GetDisplayString(chartEncoding));
+		else
+			Log("Course encoding couldn't be assumed. (Assuming UTF-8)", Logger::Severity::Warning);
+
+	}
+	if (chartEncoding != StringEncoding::Unknown)
+	{
+		for (auto& it : settings)
+		{
+			const String& value = it.second;
+			if (value.empty()) continue;
+
+			it.second = StringEncodingConverter::ToUTF8(chartEncoding, value);
+		}
+	}
+
+	while (TextStream::ReadLine(input, line, lineEnding))
+	{
+		line.Trim();
+		lineNumber++;
+		if (line.empty() || line[0] != '[')
+			continue;
+
+		line.TrimFront('[');
+		line.TrimBack(']');
+		if (line.empty())
+		{
+			Logf("Empty course chart found on line %u", Logger::Severity::Warning, lineNumber);
+			return false;
+		}
+
+		line = Path::Normalize(line);
+		charts.push_back(line);
+	}
+	return true;
+}
+
 KShootMap::KShootMap()
 {
 
@@ -74,10 +163,19 @@ bool KShootMap::Init(BinaryStream& input, bool metadataOnly)
 {
 	ProfilerScope $("Load KShootMap");
 
+	StringEncoding chartEncoding = StringEncoding::Unknown;
+
 	// Read Byte Order Mark
 	uint32_t bom = 0;
 	input.Serialize(&bom, 3);
-	if(bom != 0x00bfbbef) // Expected format for UTF-8
+
+	// If the BOM is not present, the chart might not be UTF-8.
+	// This is forbidden by the spec, but there are old charts which did not use UTF-8. (#314)
+	if (bom == 0x00bfbbef)
+	{
+		chartEncoding = StringEncoding::UTF8;
+	}
+	else
 	{
 		input.Seek(0);
 	}
@@ -86,7 +184,7 @@ bool KShootMap::Init(BinaryStream& input, bool metadataOnly)
 	String line;
 	static const String lineEnding = "\r\n";
 
-	// Parse Header
+	// Parse header (encoding-agnostic)
 	while(TextStream::ReadLine(input, line, lineEnding))
 	{
 		line.Trim();
@@ -95,6 +193,7 @@ bool KShootMap::Init(BinaryStream& input, bool metadataOnly)
 		{
 			break;
 		}
+		
 		String k, v;
 		if (line.empty())
 			continue;
@@ -102,8 +201,29 @@ bool KShootMap::Init(BinaryStream& input, bool metadataOnly)
 			continue;
 		if(!line.Split("=", &k, &v))
 			return false;
-		WString str = Utility::ConvertToWString(v);
+
 		settings.FindOrAdd(k) = v;
+	}
+
+	if (chartEncoding == StringEncoding::Unknown)
+	{
+		chartEncoding = StringEncodingDetector::Detect(input, 0, input.Tell());
+
+		if (chartEncoding != StringEncoding::Unknown)
+			Logf("Chart encoding is assumed to be %s", Logger::Severity::Info, GetDisplayString(chartEncoding));
+		else
+			Log("Chart encoding couldn't be assumed. (Assuming UTF-8)", Logger::Severity::Warning);
+
+		if (chartEncoding != StringEncoding::Unknown)
+		{
+			for (auto& it : settings)
+			{
+				const String& value = it.second;
+				if (value.empty()) continue;
+
+				it.second = StringEncodingConverter::ToUTF8(chartEncoding, value);
+			}
+		}
 	}
 
 	if(metadataOnly)
@@ -141,11 +261,11 @@ bool KShootMap::Init(BinaryStream& input, bool metadataOnly)
 			String k, v;
 			if(line[0] == '#')
 			{
-				Vector<String> strings = line.Explode(" ");
+				Vector<String> strings = line.Explode(" ", false);
 				String type = strings[0];
 				if(strings.size() != 3)
 				{
-					Logf("Invalid define found in ksh map @%d: %s", Logger::Warning, lineNumber, line);
+					Logf("Invalid define found in ksh file @%d: %s", Logger::Severity::Warning, lineNumber, line);
 					continue;
 				}
 
@@ -159,7 +279,7 @@ bool KShootMap::Init(BinaryStream& input, bool metadataOnly)
 					String k, v;
 					if(!param.Split("=", &k, &v))
 					{
-						Logf("Invalid parameter in custom effect definition for [%s]@%d: \"%s\"", Logger::Warning, def.typeName, lineNumber, line);
+						Logf("Invalid parameter in custom effect definition for [%s]@%d: \"%s\"", Logger::Severity::Warning, def.typeName, lineNumber, line);
 						continue;
 					}
 					def.parameters.Add(k, v);
@@ -175,7 +295,7 @@ bool KShootMap::Init(BinaryStream& input, bool metadataOnly)
 				}
 				else
 				{
-					Logf("Unkown define statement in ksh @%d: \"%s\"", Logger::Warning, lineNumber, line);
+					Logf("Unkown define statement in ksh @%d: \"%s\"", Logger::Severity::Warning, lineNumber, line);
 				}
 			}
 			else if(line.Split("=", &k, &v))
@@ -199,17 +319,17 @@ bool KShootMap::Init(BinaryStream& input, bool metadataOnly)
 				tick.fx.Split("|", &tick.fx, &tick.laser);
 				if(tick.buttons.length() != 4)
 				{
-					Logf("Invalid buttons at line %d", Logger::Error, lineNumber);
+					Logf("Invalid buttons at line %d", Logger::Severity::Error, lineNumber);
 					return false;
 				}
 				if(tick.fx.length() != 2)
 				{
-					Logf("Invalid FX buttons at line %d", Logger::Error, lineNumber);
+					Logf("Invalid FX buttons at line %d", Logger::Severity::Error, lineNumber);
 					return false;
 				}
 				if(tick.laser.length() < 2)
 				{
-					Logf("Invalid lasers at line %d", Logger::Error, lineNumber);
+					Logf("Invalid lasers at line %d", Logger::Severity::Error, lineNumber);
 					return false;
 				}
 				if(tick.laser.length() > 2)
@@ -281,7 +401,7 @@ float KShootMap::TranslateLaserChar(char c) const
 	uint32* index = laserCharacters.Find(c);
 	if(!index)
 	{
-		Logf("Invalid laser control point '%c'", Logger::Warning, c);
+		Logf("Invalid laser control point '%c'", Logger::Severity::Warning, c);
 		return 0.0f;
 	}
 	return (float)index[0] / (float)(laserCharacters.size()-1);

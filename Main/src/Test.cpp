@@ -7,7 +7,6 @@
 #include "Track.hpp"
 #include "Camera.hpp"
 #include "Background.hpp"
-#include "HealthGauge.hpp"
 #include "Shared/Jobs.hpp"
 #include "ScoreScreen.hpp"
 #include "Shared/Enum.hpp"
@@ -16,12 +15,6 @@ class Test_Impl : public Test
 {
 private:
 	WString m_currentText;
-	float a = 0.1f; // 0 - 1
-	float b = 2.0f; // 0 - 10
-	float c = 1.0f; // 0 - 5
-	float d = 0.0f; // -2 - 2
-	int e = 0;
-	int f = 0;
 	Ref<Gamepad> m_gamepad;
 	Vector<String> m_textSettings;
 
@@ -37,7 +30,7 @@ public:
 	{
 		return arg * 2;
 	}
-	bool Init()
+	bool Init() override
 	{
 		m_gamepad = g_gameWindow->OpenGamepad(0);
 		return true;
@@ -45,14 +38,14 @@ public:
 	~Test_Impl()
 	{
 	}
-	virtual void OnKeyPressed(int32 key) override
+	virtual void OnKeyPressed(SDL_Scancode code) override
 	{
-		if(key == SDLK_TAB)
+		if(code == SDL_SCANCODE_TAB)
 		{
 			//m_settings->SetShow(!m_settings->IsShown());
 		}
 	}
-	virtual void OnKeyReleased(int32 key) override
+	virtual void OnKeyReleased(SDL_Scancode code) override
 	{
 	}
 	virtual void Render(float deltaTime) override

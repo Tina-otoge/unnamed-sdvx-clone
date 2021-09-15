@@ -4,6 +4,8 @@
 #include "Shared/Enum.hpp"
 #include "Shared/Unique.hpp"
 #include "Shared/BinaryStream.hpp"
+#include <unordered_set>
+
 
 /*
 	Base class used for config files
@@ -13,19 +15,26 @@
 class ConfigBase : public Unique
 {
 public:
+	typedef std::unordered_set<uint32> KeyList;
 	virtual ~ConfigBase();
 
 	// Load from text file
-	bool Load(BinaryStream& stream);
-	bool Load(const String& path);
+	bool Load(BinaryStream& stream, bool reload = true);
+	bool Load(const String& path, bool reload = true);
 	// Save to text file
-	void Save(BinaryStream& stream);
-	bool Save(const String& path);
+	void Save(BinaryStream& stream, KeyList* ignore = nullptr, KeyList* only = nullptr);
+	bool Save(const String& path, KeyList* ignore = nullptr, KeyList* only = nullptr);
 
 	bool IsDirty() const;
 
 	// Resets config back to default state
 	void Clear();
+
+	// Update this config with values from a second
+	void Update(ConfigBase& other, KeyList* ignore = nullptr, KeyList* only = nullptr);
+
+	// Only really useful for profiles
+	const KeyList& GetKeysInFile() { return m_entriesInFile;  }
 
 protected:
 	ConfigBase();
@@ -34,6 +43,8 @@ protected:
 	Map<String, uint32> m_keys;
 	Map<uint32, String> m_reverseKeys;
 	Map<uint32, IConfigEntry*> m_entries;
+	KeyList m_entriesInFile;
+	
 	bool m_dirty = false;
 };
 
@@ -75,6 +86,11 @@ public:
 	{
 		return GetEnsure<BoolConfigEntry>(key)->data;
 	}
+	template<size_t N>
+	std::array<uint8, N> GetBlob(KeyType key) const {
+		return GetEnsure<BlobConfigEntry<N>>(key)->data;
+	}
+
 	template<typename EnumClass1>
 	typename EnumClass1::EnumType GetEnum(KeyType key) const
 	{
@@ -126,6 +142,18 @@ public:
 			m_dirty = true;
 		}
 	}
+
+	template<size_t N>
+	void SetBlob(KeyType key, std::array<uint8, N> value)
+	{
+		std::array<uint8, N>& dst = SetEnsure<BlobConfigEntry<N>>(key)->data;
+		if (memcmp(dst.data(), value.data(), N) != 0)
+		{
+			memcpy(dst.data(), value.data(), N);
+			m_dirty = true;
+		}
+	}
+
 	template<typename EnumClass1>
 	void SetEnum(KeyType key, typename EnumClass1::EnumType value)
 	{
@@ -136,6 +164,8 @@ public:
 			m_dirty = true;
 		}
 	}
+
+
 
 private:
 	// Create or returns with type checking

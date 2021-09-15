@@ -2,15 +2,15 @@
 #include "ApplicationTickable.hpp"
 #include "Shared/LuaBindable.hpp"
 #include "Input.hpp"
-#include "Shared/Thread.hpp"
+#include "GameplaySettingsDialog.hpp"
 #include "GameConfig.hpp"
-#include "cpr/cpr.h"
-#include <queue>
 #include "Beatmap/MapDatabase.hpp"
-#include "json.hpp"
 #include "TCPSocket.hpp"
-#include <Scoring.hpp>
+#include "Scoring.hpp"
 #include "DBUpdateScreen.hpp"
+#include "PreviewPlayer.hpp"
+
+class PreviewPlayer;
 
 enum SyncState {
 	LOADING,
@@ -28,6 +28,7 @@ enum MultiplayerScreenState {
 };
 
 class TextInputMultiplayer;
+class ChatOverlay;
 
 struct MultiplayerBPMInfo {
 	double start;
@@ -39,7 +40,7 @@ struct MultiplayerBPMInfo {
 class MultiplayerScreen : public IAsyncLoadableApplicationTickable
 {
 public:
-	MultiplayerScreen();
+	MultiplayerScreen() : m_settDiag(this) {};
 	~MultiplayerScreen();
 
 	bool Init() override;
@@ -47,14 +48,15 @@ public:
 	void Render(float deltaTime) override;
 	void ForceRender(float deltaTime) override;
 
-	void OnKeyPressed(int32 key) override;
-	void OnKeyReleased(int32 key) override;
+	void OnKeyPressed(SDL_Scancode code) override;
+	void OnKeyReleased(SDL_Scancode code) override;
 	void MousePressed(MouseButton button);
 
-	virtual void OnSuspend();
-	virtual void OnRestore();
-	virtual bool AsyncLoad();
-	virtual bool AsyncFinalize();
+
+	void OnSuspend() override;
+	void OnRestore() override;
+	bool AsyncLoad() override;
+	bool AsyncFinalize() override;
 	void JoinRoomWithToken(String token);
 
 	int lExit(struct lua_State* L);
@@ -68,8 +70,10 @@ public:
 	void SetSelectedMap(FolderIndex*, ChartIndex*);
 
 	void PerformScoreTick(Scoring& scoring, MapTime time);
-	void SendFinalScore(class Game* game, int clearState);
+	void SendFinalScore(class Game* game, ClearMark clearState);
 	void GetMapBPMForSpeed(const String path, struct MultiplayerBPMInfo& info);
+
+	ChartIndex* GetCurrentSelectedChart() const;
 
 	Vector<nlohmann::json> const* GetFinalStats() const
 	{
@@ -79,6 +83,11 @@ public:
 	TCPSocket& GetTCP()
 	{
 		return m_tcp;
+	}
+
+	ChatOverlay* GetChatOverlay()
+	{
+		return m_chatOverlay;
 	}
 
 	String GetUserId()
@@ -98,8 +107,19 @@ public:
 		m_failed = true;
 	}
 	
-	bool HasFailed() {
+	bool HasFailed()
+	{
 		return m_failed;
+	}
+
+	bool InRoom()
+	{
+		return m_roomId != "";
+	}
+
+	const String& GetUserName()
+	{
+		return m_userName;
 	}
 
 private:
@@ -118,6 +138,7 @@ private:
 	bool m_handleError(nlohmann::json& packet);
 	void m_handleSocketClose();
 	bool m_handleFinalStats(nlohmann::json& packet);
+	void m_SetCurrentChartOffset(int newValue);
 
 	void m_onDatabaseUpdateStart(int max);
 	void m_onDatabaseUpdateProgress(int, int);
@@ -129,6 +150,7 @@ private:
 	void m_render(float deltaTime);
 
 	void m_joinRoomWithToken();
+	bool m_returnToMainList();
 
 	void OnSearchStatusUpdated(String status);
 
@@ -141,6 +163,9 @@ private:
 
 	void m_changeDifficulty(int offset);
 	void m_changeSelectedRoom(int offset);
+
+	void m_updatePreview(ChartIndex* diff, bool mapChanged);
+	void m_stopPreview();
 
 	// Some lua util functions
 	void m_PushStringToTable(const char* name, const char* data)
@@ -194,6 +219,10 @@ private:
 	String m_selectedMapShortPath;
 	String m_selectedMapHash;
 
+	Map<Input::Button, float> m_timeSinceButtonPressed;
+	Map<Input::Button, float> m_timeSinceButtonReleased;
+	Map<Input::Button, bool> m_buttonPressed;
+
 	// Selected index into the map's difficulties
 	int32 m_selectedDiffIndex = 0;
 	bool m_hasSelectedMap = false;
@@ -214,6 +243,8 @@ private:
 
 	String m_joinToken;
 
+	GameplaySettingsDialog m_settDiag;
+
 	String m_userName;
 	String m_newRoomName;
 
@@ -226,4 +257,9 @@ private:
 	Vector<nlohmann::json> m_finalStats;
 
 	DBUpdateScreen* m_dbUpdateScreen = nullptr;
+
+	ChatOverlay* m_chatOverlay = NULL;
+
+	PreviewPlayer m_previewPlayer;
+	PreviewParams m_previewParams;
 };

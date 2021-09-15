@@ -3,10 +3,12 @@
 #include "Application.hpp"
 #include "GameConfig.hpp"
 #include "Background.hpp"
+#include "ShadedMesh.hpp"
 #include "Game.hpp"
 #include "Track.hpp"
 #include "Camera.hpp"
 #include "lua.hpp"
+#include "Gauge.hpp"
 #include "Shared/LuaBindable.hpp"
 
 /* Background template for fullscreen effects */
@@ -19,6 +21,11 @@ public:
 		{
 			delete bindable;
 			bindable = nullptr;
+		}
+		if (trackBindable)
+		{
+			delete trackBindable;
+			trackBindable = nullptr;
 		}
 		if (lua)
 		{
@@ -47,20 +54,21 @@ public:
 		rq.Process();
 	}
 
+protected:
 	RenderState renderState;
 	Mesh fullscreenMesh;
 	Material fullscreenMaterial;
 	Map<String, Texture> textures;
-	Texture frameBufferTexture;
+	Texture frameBufferTexture = nullptr;
 	MaterialParameterSet fullscreenMaterialParams;
 	float clearTransition = 0.0f;
 	float offsyncTimer = 0.0f;
 	float speedMult = 1.0f;
-	bool foreground;
-	bool hasFbTex;
+	bool foreground = false;
 	bool errored = false;
 	Vector<String> defaultBGs;
 	LuaBindable *bindable = nullptr;
+	LuaBindable *trackBindable = nullptr;
 	String folderPath;
 	lua_State *lua = nullptr;
 	Vector3 timing;
@@ -74,14 +82,23 @@ private:
 	{
 		if (luaL_dofile(lua, Path::Normalize(path + ".lua").c_str()))
 		{
-			Logf("Lua error: %s", Logger::Warning, lua_tostring(lua, -1));
+			Logf("Lua error: %s", Logger::Severity::Warning, lua_tostring(lua, -1));
 			return false;
 		}
 		String matPath = path + ".fs";
 
 		CheckedLoad(fullscreenMaterial = LoadBackgroundMaterial(matPath));
 		fullscreenMaterial->opaque = false;
-		hasFbTex = fullscreenMaterial->HasUniform("fb_tex");
+
+		if (fullscreenMaterial->HasUniform("texFrameBuffer"))
+		{
+			frameBufferTexture = TextureRes::CreateFromFrameBuffer(g_gl, g_resolution);
+		}
+		else
+		{
+			frameBufferTexture = nullptr;
+		}
+
 		return true;
 	}
 
@@ -97,10 +114,13 @@ public:
 		String skin = g_gameConfig.GetString(GameConfigKeys::Skin);
 		lua = luaL_newstate();
 
-		auto openLib = [this](char* name, lua_CFunction lib)
-		{
+		auto openLib = [this](const char *name, lua_CFunction lib) {
 			luaL_requiref(lua, name, lib, 1);
 			lua_pop(lua, 1);
+		};
+
+		auto errorOnLib = [this](const char *name) {
+			luaL_dostring(lua, (String(name) + " = {}; setmetatable(" + String(name) + ", {__index = function() error(\"Song background cannot access the '" + name + "' library\") end})").c_str());
 		};
 
 		//open libs
@@ -111,8 +131,38 @@ public:
 		openLib(LUA_STRLIBNAME, luaopen_string);
 		openLib(LUA_MATHLIBNAME, luaopen_math);
 
+		// Add error messages to libs which are not allowed
+		errorOnLib(LUA_COLIBNAME);
+		errorOnLib(LUA_IOLIBNAME);
+		errorOnLib(LUA_OSLIBNAME);
+		errorOnLib(LUA_UTF8LIBNAME);
+		errorOnLib(LUA_DBLIBNAME);
+
+		// Clean up the 'package' library so we can't load dlls
+		lua_getglobal(lua, "package");
+
+		// Remove C searchers so we can't load dlls
+		lua_getfield(lua, -1, "searchers"); // Get the searcher list (-1)
+		lua_pushnil(lua);
+		lua_rawseti(lua, -2, 4); // C root
+		lua_pushnil(lua);
+		lua_rawseti(lua, -2, 3); // C path
+		lua_pop(lua, 1);		 /* remove searchers */
+
+		// Remove loadlib so we can't load dlls
+		lua_pushnil(lua);
+		lua_setfield(lua, -2, "loadlib");
+
+		// Remove cpath so we won't try and load anything from it
+		lua_pushstring(lua, "");
+		lua_setfield(lua, -2, "cpath");
+
+		lua_pop(lua, 1); /* remove package */
+
 		g_application->SetLuaBindings(lua);
 		game->SetInitialGameplayLua(lua);
+		// We have to do this seperately bc package is already defined
+		luaL_dostring(lua, "setmetatable(package, {__index = function() error(\"Song background cannot access the 'package' library\") end})");
 
 		String bindName = foreground ? "foreground" : "background";
 
@@ -127,19 +177,29 @@ public:
 		bindable->AddFunction("GetTilt", this, &TestBackground::GetTilt);
 		bindable->AddFunction("GetScreenCenter", this, &TestBackground::GetScreenCenter);
 		bindable->AddFunction("GetClearTransition", this, &TestBackground::GetClearTransition);
+
 		bindable->Push();
 		lua_settop(lua, 0);
 
+		trackBindable = game->MakeTrackLuaBindable(lua);
+		trackBindable->Push();
 
 		String matPath = "";
 		String fname = foreground ? "fg" : "bg";
-		if (defaultBGs.Contains(game->GetBeatmap()->GetMapSettings().foregroundPath))
+		String kshLayer = game->GetBeatmap()->GetMapSettings().foregroundPath;
+		String layer;
+
+		if (!kshLayer.Split(";", &layer, nullptr))
+		{
+			layer = kshLayer;
+		}
+		if (defaultBGs.Contains(layer))
 		{
 			//default bg: load from skin path
 			folderPath = "skins/" +
 						 g_application->GetCurrentSkin() + Path::sep +
 						 "backgrounds" + Path::sep +
-						 game->GetBeatmap()->GetMapSettings().foregroundPath +
+						 layer +
 						 Path::sep;
 			folderPath = Path::Absolute(folderPath);
 		}
@@ -147,7 +207,7 @@ public:
 		{
 			//if skin doesn't have it, try loading from chart folder
 			folderPath = game->GetChartRootPath() + Path::sep +
-						 game->GetBeatmap()->GetMapSettings().foregroundPath +
+						 layer +
 						 Path::sep;
 			folderPath = Path::Absolute(folderPath);
 		}
@@ -156,12 +216,11 @@ public:
 		if (m_init(path))
 			return true;
 
-		Logf("Failed to load %s at path: \"%s\" Attempting to load fallback instead.", Logger::Warning, foreground ? "foreground" : "background", folderPath);
+		Logf("Failed to load %s at path: \"%s\" Attempting to load fallback instead.", Logger::Severity::Warning, foreground ? "foreground" : "background", folderPath);
 		path = Path::Absolute("skins/" + skin + "/backgrounds/fallback/");
 		folderPath = path;
 		path = Path::Normalize(path + fname);
 		return m_init(path);
-
 	}
 	virtual void Render(float deltaTime) override
 	{
@@ -177,12 +236,12 @@ public:
 		timing.y = offsyncTimer;
 
 		float clearBorder = 0.70f;
-		if ((game->GetFlags() & GameFlags::Hard) != GameFlags::None)
+		if (game->GetScoring().GetTopGauge()->GetType() != GaugeType::Normal)
 		{
 			clearBorder = 0.30f;
 		}
 
-		bool cleared = game->GetScoring().currentGauge >= clearBorder;
+		bool cleared = game->GetScoring().GetTopGauge()->GetValue() >= clearBorder;
 
 		if (cleared)
 			clearTransition += deltaTime / tp.beatDuration * 1000;
@@ -191,18 +250,17 @@ public:
 
 		clearTransition = Math::Clamp(clearTransition, 0.0f, 1.0f);
 
-		Vector3 trackEndWorld = Vector3(0.0f, 25.0f, 0.0f);
 		Vector2i screenCenter = game->GetCamera().GetScreenCenter();
 
-		tilt = { game->GetCamera().GetActualRoll(), game->GetCamera().GetBackgroundSpin() };
+		tilt = {game->GetCamera().GetActualRoll(), game->GetCamera().GetBackgroundSpin()};
 		fullscreenMaterialParams.SetParameter("clearTransition", clearTransition);
 		fullscreenMaterialParams.SetParameter("tilt", tilt);
 		fullscreenMaterialParams.SetParameter("screenCenter", screenCenter);
 		fullscreenMaterialParams.SetParameter("timing", timing);
-		if (foreground && hasFbTex)
+		if (foreground && frameBufferTexture)
 		{
 			frameBufferTexture->SetFromFrameBuffer();
-			fullscreenMaterialParams.SetParameter("fb_tex", frameBufferTexture);
+			fullscreenMaterialParams.SetParameter("texFrameBuffer", frameBufferTexture);
 		}
 
 		if (foreground)
@@ -215,7 +273,7 @@ public:
 			lua_pushnumber(lua, deltaTime);
 			if (lua_pcall(lua, 1, 0, 0) != 0)
 			{
-				Logf("Lua error: %s", Logger::Error, lua_tostring(lua, -1));
+				Logf("Lua error: %s", Logger::Severity::Error, lua_tostring(lua, -1));
 				g_gameWindow->ShowMessageBox("Lua Error", lua_tostring(lua, -1), 0);
 				errored = true;
 			}
@@ -229,11 +287,19 @@ public:
 		String uniformName(luaL_checkstring(L, 2));
 		String filename(luaL_checkstring(L, 3));
 		filename = Path::Normalize(folderPath + Path::sep + filename);
-		textures.Add(uniformName, g_application->LoadTexture(filename, true));
+		auto texture = g_application->LoadTexture(filename, true);
+		if (texture)
+		{
+			textures.Add(uniformName, texture);
+		}
+		else
+		{
+			Logf("Failed to load texture at: %s", Logger::Severity::Warning, filename);
+		}
 		return 0;
 	}
 
-	int GetTiming(lua_State* L)
+	int GetTiming(lua_State *L)
 	{
 		lua_pushnumber(L, timing.x);
 		lua_pushnumber(L, timing.y);
@@ -241,14 +307,14 @@ public:
 		return 3;
 	}
 
-	int GetTilt(lua_State* L)
+	int GetTilt(lua_State *L)
 	{
 		lua_pushnumber(L, tilt.x);
 		lua_pushnumber(L, tilt.y);
 		return 2;
 	}
 
-	int GetScreenCenter(lua_State* L)
+	int GetScreenCenter(lua_State *L)
 	{
 		auto c = game->GetCamera().GetScreenCenter();
 		lua_pushnumber(L, c.x);
@@ -256,7 +322,7 @@ public:
 		return 2;
 	}
 
-	int GetClearTransition(lua_State* L)
+	int GetClearTransition(lua_State *L)
 	{
 		lua_pushnumber(L, clearTransition);
 		return 1;
@@ -288,13 +354,13 @@ public:
 		FullscreenBackground::Render(0);
 		return 0;
 	}
-	int SetSpeedMult(lua_State* L)
+	int SetSpeedMult(lua_State *L)
 	{
 		speedMult = luaL_checknumber(L, 2);
 		return 0;
 	}
 
-	int GetPath(lua_State* L)
+	int GetPath(lua_State *L)
 	{
 		lua_pushstring(L, *folderPath);
 		return 1;

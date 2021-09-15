@@ -2,7 +2,18 @@
 #include "Shared/Config.hpp"
 #include "Input.hpp"
 
+#ifdef Always
+#undef Always
+#endif
+
+#ifdef None
+#undef None
+#endif
+
 DefineEnum(GameConfigKeys,
+		   // Version of the config
+		   ConfigVersion,
+
 		   // Screen settings
 		   ScreenWidth,
 		   ScreenHeight,
@@ -13,13 +24,20 @@ DefineEnum(GameConfigKeys,
 		   Fullscreen,
 		   FullscreenMonitorIndex,
 		   WindowedFullscreen,
+		   AdjustWindowPositionOnStartup,
+
 		   AntiAliasing,
 		   MasterVolume,
 		   VSync,
 		   ShowFps,
 		   ForcePortrait,
+		   LogLevel,
 
 		   // Game settings
+		   HitWindowPerfect,
+		   HitWindowGood,
+		   HitWindowHold,
+		   HitWindowSlam,
 		   HiSpeed,
 		   SpeedMod,
 		   ModSpeed,
@@ -27,18 +45,16 @@ DefineEnum(GameConfigKeys,
 		   SkipScore,
 		   GlobalOffset,
 		   InputOffset,
+		   LaserOffset,
 		   SongFolder,
 		   Skin,
 		   Laser0Color,
 		   Laser1Color,
 		   FPSTarget,
-		   LaserAssistLevel,
-		   LaserPunish,
-		   LaserChangeTime,
-		   LaserChangeExponent,
 		   GaugeDrainNormal,
 		   GaugeDrainHalf,
 
+		   EnableHiddenSudden,
 		   HiddenCutoff,
 		   HiddenFade,
 		   SuddenCutoff,
@@ -48,6 +64,16 @@ DefineEnum(GameConfigKeys,
 		   DistantButtonScale,
 		   BTOverFXScale,
 		   DisableBackgrounds,
+		   ScoreDisplayMode,
+		   AutoComputeSongOffset,
+		   UpdateSongOffsetAfterFirstPlay,
+		   UpdateSongOffsetAfterEveryPlay,
+
+		   LeadInTime,
+		   PracticeLeadInTime,
+		   PracticeSetupNavEnabled,
+		   RevertToSetupAfterScoreScreen,
+		   DisplayPracticeInfoInGame,
 
 		   // Input device setting per element
 		   LaserInputDevice,
@@ -60,6 +86,7 @@ DefineEnum(GameConfigKeys,
 
 		   // Key bindings
 		   Key_BTS,
+		   Key_BTSAlt,
 		   Key_BT0,
 		   Key_BT1,
 		   Key_BT2,
@@ -76,7 +103,12 @@ DefineEnum(GameConfigKeys,
 		   Key_Laser0Neg,
 		   Key_Laser1Pos,
 		   Key_Laser1Neg,
+		   Key_Laser0PosAlt,
+		   Key_Laser0NegAlt,
+		   Key_Laser1PosAlt,
+		   Key_Laser1NegAlt,
 		   Key_Back,
+		   Key_BackAlt,
 		   Key_Sensitivity,
 		   Key_LaserReleaseTime,
 
@@ -97,15 +129,27 @@ DefineEnum(GameConfigKeys,
 		   Controller_Sensitivity,
 		   InputBounceGuard,
 		   SongSelSensMult,
+		   InvertLaserInput,
+
+		   // In-Game Abort
+		   RestartPlayMethod,
+		   RestartPlayHoldDuration,
+		   ExitPlayMethod,
+		   ExitPlayHoldDuration,
+		   DisableNonButtonInputsDuringPlay, // TODO: after enabling key customization for non-button commands, remove this.
 
 		   LastSelected,
+		   LastSelectedChal,
 		   LastSort,
+		   LastSortChal,
 		   LevelFilter,
+		   LevelFilterChal,
 		   FolderFilter,
 
 		   AutoResetSettings,		//Reset game settings after each song (good for convention setups)
 		   AutoResetToSpeed,		//Mod-Speed to reset to after each song (when AutoResetSettings is true)
 		   SlamThicknessMultiplier, //TODO: Remove after better values have been found(?)
+		   DelayedHitEffects,		// TODO: Think of a better name
 
 		   EditorPath,
 		   EditorParamsFormat,
@@ -114,6 +158,7 @@ DefineEnum(GameConfigKeys,
 
 		   WASAPI_Exclusive,
 		   MuteUnfocused,
+		   PrerenderEffects,
 
 		   CheckForUpdates,
 		   OnlyRelease,
@@ -124,30 +169,70 @@ DefineEnum(GameConfigKeys,
 		   MultiplayerPassword,
 		   MultiplayerUsername,
 
-		   RollIgnoreDuration,
-		   LaserSlamLength,
+		   IRBaseURL,
+		   IRToken,
+		   IRLowBandwidth,
+
+		   EnableFancyHighwayRoll,
+
+		   GameplaySettingsDialogLastTab,
+		   SettingsLastTab,
+		   TransferScoresOnChartUpdate,
+
+		   KeepFontTexture,
+
+		   CurrentProfileName,
+		   FastGUI,
+		   SkinDevMode,
 
 		   // Gameplay options
 		   GaugeType,
+		   BlastiveLevel,
 		   MirrorChart,
-		   RandomizeChart);
+		   RandomizeChart,
+		   BackupGauge,
+		   UpdateChannel)
+
+// List of settings overriden by profiles
+extern ConfigBase::KeyList GameConfigProfileSettings;
 
 DefineEnum(GaugeTypes,
 		   Normal,
-		   Hard);
+		   Hard,
+		   Permissive,
+	       Blastive)
 
 DefineEnum(SpeedMods,
 		   XMod,
 		   MMod,
-		   CMod);
+		   CMod)
 
-#ifdef Always
-#undef Always
-#endif
+DefineEnum(AbortMethod,
+		   None,
+		   Press,
+		   Hold)
+
+DefineEnum(ScoreDisplayModes,
+		   Additive,
+		   Subtractive,
+		   Average)
+
+DefineEnum(LaserAxisOption,
+	       None,
+	       Left,
+	       Right,
+	       Both)
+
 DefineEnum(AutoScoreScreenshotSettings,
 		   Off,
 		   Highscore,
-		   Always);
+		   Always)
+
+DefineEnum(SongOffsetUpdateMethod,
+		   None,
+		   Play,
+		   PlayWholeChart,
+		   Clear)
 
 DefineEnum(ButtonComboModeSettings,
 		   Disabled,
@@ -160,6 +245,11 @@ DefineEnum(ButtonComboModeSettings,
 public:
 	GameConfig();
 	void SetKeyBinding(GameConfigKeys key, Key value);
+
+	static int32 VERSION;
+
+	// Update the version of the config file to VERSION.
+	void UpdateVersion();
 
 protected:
 	virtual void InitDefaults() override;

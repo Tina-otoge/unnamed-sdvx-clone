@@ -6,24 +6,16 @@
 #include "SongSelect.hpp"
 #include "TitleScreen.hpp"
 #include <Audio/Audio.hpp>
-#include <Graphics/Window.hpp>
 #include <Graphics/ResourceManagers.hpp>
-#include "Shared/Jobs.hpp"
 #include <Shared/Profiling.hpp>
-#include "Scoring.hpp"
 #include "GameConfig.hpp"
+#include "GuiUtils.hpp"
 #include "Input.hpp"
 #include "TransitionScreen.hpp"
-#include "GUI/HealthGauge.hpp"
-#include "lua.hpp"
-#include "nanovg.h"
-#include "discord_rpc.h"
-#include "cpr/cpr.h"
-#include "json.hpp"
 #include "SkinConfig.hpp"
-#include "SkinHttp.hpp"
-#include "SDL2/SDL_keycode.h"
 #include "ShadedMesh.hpp"
+#include "IR.hpp"
+
 #ifdef EMBEDDED
 #define NANOVG_GLES2_IMPLEMENTATION
 #else
@@ -32,7 +24,10 @@
 #include "nanovg_gl.h"
 #include "GUI/nanovg_lua.h"
 #ifdef _WIN32
-#include <Windows.h>
+#ifdef CRASHDUMP
+#include "exception_handler.h"
+#include "client_info.h"
+#endif
 #endif
 #include "archive.h"
 #include "archive_entry.h"
@@ -110,9 +105,11 @@ void Application::ApplySettings()
 	{
 		m_needSkinReload = true;
 	}
-
+	Logger::Get().SetLogLevel(g_gameConfig.GetEnum<Logger::Enum_Severity>(GameConfigKeys::LogLevel));
 	g_gameWindow->SetVSync(g_gameConfig.GetBool(GameConfigKeys::VSync) ? 1 : 0);
 	m_showFps = g_gameConfig.GetBool(GameConfigKeys::ShowFps);
+
+	m_UpdateWindowPosAndShape();
 	m_OnWindowResized(g_gameWindow->GetWindowSize());
 	m_SaveConfig();
 }
@@ -135,14 +132,14 @@ int32 Application::Run()
 			Game *game = LaunchMap(m_commandLine[1]);
 			if (!game)
 			{
-				Logf("LaunchMap(%s) failed", Logger::Error, m_commandLine[1]);
+				Logf("LaunchMap(%s) failed", Logger::Severity::Error, m_commandLine[1]);
 			}
 			else
 			{
 				auto &cmdLine = g_application->GetAppCommandLine();
 				if (cmdLine.Contains("-autoplay") || cmdLine.Contains("-auto"))
 				{
-					game->GetScoring().autoplay = true;
+					game->GetScoring().autoplayInfo.autoplay = true;
 				}
 				mapLaunched = true;
 			}
@@ -175,9 +172,11 @@ void Application::SetUpdateAvailable(const String &version, const String &url, c
 	m_hasUpdate = true;
 }
 
+
 void Application::RunUpdater()
 {
 #ifdef _WIN32
+
 	//HANDLE handle = GetCurrentProcess();
 	//HANDLE handledup;
 
@@ -190,6 +189,7 @@ void Application::RunUpdater()
 	//	0);
 
 	/// TODO: use process handle instead of pid to wait
+	
 	String arguments = Utility::Sprintf("%lld %s", GetCurrentProcessId(), *m_updateDownload);
 	Path::Run(Path::Absolute("updater.exe"), *arguments);
 	Shutdown();
@@ -207,6 +207,8 @@ NVGcontext *Application::GetVGContext()
 {
 	return g_guiState.vg;
 }
+
+
 
 Vector<String> Application::GetUpdateAvailable()
 {
@@ -251,7 +253,7 @@ void Application::m_unpackSkins()
 
 	for (FileInfo &fi : files)
 	{
-		Logf("[Archive] Extracting skin '%s'", Logger::Info, fi.fullPath);
+		Logf("[Archive] Extracting skin '%s'", Logger::Severity::Info, fi.fullPath);
 
 		// Init archive structs
 		archive *a = archive_read_new();
@@ -271,7 +273,7 @@ void Application::m_unpackSkins()
 		int res = archive_read_open_filename(a, fi.fullPath.c_str(), 10240);
 		if (res != ARCHIVE_OK)
 		{
-			Logf("[Archive] Error reading skin archive '%s'", Logger::Error,
+			Logf("[Archive] Error reading skin archive '%s'", Logger::Severity::Error,
 				 archive_error_string(a));
 			archive_read_close(a);
 			archive_read_free(a);
@@ -324,7 +326,7 @@ void Application::m_unpackSkins()
 		res = archive_read_open_filename(a, fi.fullPath.c_str(), 10240);
 		if (res != ARCHIVE_OK)
 		{
-			Logf("[Archive] Error reading skin archive '%s'", Logger::Error,
+			Logf("[Archive] Error reading skin archive '%s'", Logger::Severity::Error,
 				 archive_error_string(a));
 			archive_read_close(a);
 			archive_read_free(a);
@@ -346,7 +348,7 @@ void Application::m_unpackSkins()
 			if (res == ARCHIVE_EOF)
 				break;
 			if (res < ARCHIVE_OK)
-				Logf("[Archive] Error reading skin archive '%s'", Logger::Error,
+				Logf("[Archive] Error reading skin archive '%s'", Logger::Severity::Error,
 					 archive_error_string(a));
 			if (res < ARCHIVE_WARN)
 			{
@@ -364,13 +366,13 @@ void Application::m_unpackSkins()
 			// Check for zipslip
 			if (fullOutputPath.find(dot_dot_win) != String::npos)
 			{
-				Logf("[Archive] Error reading skin archive: '%s' can't appear in file name '%s'", Logger::Error, dot_dot_win.c_str(), fullOutputPath.c_str());
+				Logf("[Archive] Error reading skin archive: '%s' can't appear in file name '%s'", Logger::Severity::Error, dot_dot_win.c_str(), fullOutputPath.c_str());
 				extractOk = false;
 				break;
 			}
 			if (fullOutputPath.find(dot_dot_unix) != String::npos)
 			{
-				Logf("[Archive] Error reading skin archive: '%s' can't appear in file name '%s'", Logger::Error, dot_dot_unix.c_str(), fullOutputPath.c_str());
+				Logf("[Archive] Error reading skin archive: '%s' can't appear in file name '%s'", Logger::Severity::Error, dot_dot_unix.c_str(), fullOutputPath.c_str());
 				extractOk = false;
 				break;
 			}
@@ -380,14 +382,14 @@ void Application::m_unpackSkins()
 			// Write the new header
 			res = archive_write_header(ext, entry);
 			if (res < ARCHIVE_OK)
-				Logf("[Archive] Error writing skin archive '%s'", Logger::Error,
+				Logf("[Archive] Error writing skin archive '%s'", Logger::Severity::Error,
 					 archive_error_string(ext));
 			else if (archive_entry_size(entry) > 0)
 			{
 				// Copy the data so it will be extracted
 				res = copyArchiveData(a, ext);
 				if (res < ARCHIVE_OK)
-					Logf("[Archive] Error writing skin archive '%s'", Logger::Error,
+					Logf("[Archive] Error writing skin archive '%s'", Logger::Severity::Error,
 						 archive_error_string(ext));
 				if (res < ARCHIVE_WARN)
 				{
@@ -397,7 +399,7 @@ void Application::m_unpackSkins()
 			}
 			res = archive_write_finish_entry(ext);
 			if (res < ARCHIVE_OK)
-				Logf("[Archive] Error writing skin archive '%s'", Logger::Error,
+				Logf("[Archive] Error writing skin archive '%s'", Logger::Severity::Error,
 					 archive_error_string(ext));
 			if (res < ARCHIVE_WARN)
 			{
@@ -420,27 +422,152 @@ void Application::m_unpackSkins()
 	}
 }
 
-bool Application::m_LoadConfig()
+bool Application::ReloadConfig(const String& profile)
 {
-	File configFile;
-	if (configFile.OpenRead(Path::Absolute("Main.cfg")))
-	{
-		FileReader reader(configFile);
-		if (g_gameConfig.Load(reader))
-			return true;
-	}
-	return false;
+	return m_LoadConfig(profile);
 }
+
+bool Application::m_LoadConfig(String profileName /* must be by value */)
+{
+
+	bool successful = false;
+
+	String configPath = "Main.cfg";
+	File mainConfigFile;
+	if (mainConfigFile.OpenRead(Path::Absolute(configPath)))
+	{
+		FileReader reader(mainConfigFile);
+		successful = g_gameConfig.Load(reader);
+		mainConfigFile.Close();
+	}
+	else
+	{
+        // Clear here to apply defaults
+        g_gameConfig.Clear();
+		g_gameConfig.Set(GameConfigKeys::ConfigVersion, GameConfig::VERSION);
+	}
+
+	if (profileName == "")
+		profileName = g_gameConfig.GetString(GameConfigKeys::CurrentProfileName);
+
+	// First load main config over
+	if (profileName == "Main") {
+		// If only loading main, then we are done
+		g_gameConfig.Set(GameConfigKeys::CurrentProfileName, profileName);
+		return successful;
+	}
+
+	// Otherwise we are going to load the profile information over top
+	configPath = Path::Normalize("profiles/" + profileName + ".cfg");
+
+	File profileConfigFile;
+	if (profileConfigFile.OpenRead(Path::Absolute(configPath)))
+	{
+		FileReader reader(profileConfigFile);
+		successful |= g_gameConfig.Load(reader, false); // Do not reset
+
+		profileConfigFile.Close();
+	}
+    else
+    {
+		// We couldn't load this, but we are not going to do anything about it
+		successful = false;
+    }
+
+	g_gameConfig.Set(GameConfigKeys::CurrentProfileName, profileName);
+	return successful;
+}
+
+void Application::m_UpdateConfigVersion()
+{
+	g_gameConfig.UpdateVersion();
+}
+
 void Application::m_SaveConfig()
 {
 	if (!g_gameConfig.IsDirty())
 		return;
 
+	String profile = g_gameConfig.GetString(GameConfigKeys::CurrentProfileName);
+	String configPath = "Main.cfg";
+	if (profile == "Main")
+	{
+		//Save everything into main.cfg
+		File configFile;
+		if (configFile.OpenWrite(Path::Absolute(configPath)))
+		{
+			FileWriter writer(configFile);
+			g_gameConfig.Save(writer);
+			configFile.Close();
+		}
+		return;
+	}
+	// We are going to save the config excluding profile settings
+	{
+		GameConfig tmp_gc;
+		{
+			// First load the current Main.cfg
+			File configFile;
+			if (configFile.OpenRead(Path::Absolute(configPath)))
+			{
+				FileReader reader(configFile);
+				tmp_gc.Load(reader);
+				configFile.Close();
+			}
+			else
+			{
+				tmp_gc.Clear();
+			}
+		}
+
+		// Now merge our new settings (ignoring profile settings)
+		tmp_gc.Update(g_gameConfig, &GameConfigProfileSettings);
+
+		// Finally save the updated version to file
+		File configFile;
+		if (configFile.OpenWrite(Path::Absolute(configPath)))
+		{
+			FileWriter writer(configFile);
+			tmp_gc.Save(writer);
+			configFile.Close();
+		}
+	}
+
+	// Now save the profile only settings
+	configPath = Path::Normalize("profiles/" + profile + ".cfg");
+
+	GameConfig tmp_gc;
+	{
+		// First load the current profile (including extra settings)
+		File configFile;
+		if (configFile.OpenRead(Path::Absolute(configPath)))
+		{
+			FileReader reader(configFile);
+			tmp_gc.Load(reader);
+			configFile.Close();
+		}
+		else
+		{
+			tmp_gc.Clear();
+		}
+	}
+
+	// Now merge our new settings (only profile settings)
+	tmp_gc.Update(g_gameConfig, nullptr, &GameConfigProfileSettings);
+
+	// If there are any extra keys in the profile config, add them
+	ConfigBase::KeyList toSave(GameConfigProfileSettings);
+	for (uint32 k : tmp_gc.GetKeysInFile())
+	{
+		toSave.insert(k);
+	}
+
 	File configFile;
-	if (configFile.OpenWrite(Path::Absolute("Main.cfg")))
+	if (configFile.OpenWrite(Path::Absolute(configPath)))
 	{
 		FileWriter writer(configFile);
-		g_gameConfig.Save(writer);
+		tmp_gc.Save(writer, nullptr, &toSave);
+		configFile.Close();
 	}
 }
 
@@ -451,7 +578,7 @@ void __discordError(int errorCode, const char *message)
 
 void __discordReady(const DiscordUser *user)
 {
-	Logf("[Discord] Logged in as \"%s\"", Logger::Info, user->username);
+	Logf("[Discord] Logged in as \"%s\"", Logger::Severity::Info, user->username);
 }
 
 void __discordJoinGame(const char *joins)
@@ -474,16 +601,30 @@ void __discordDisconnected(int errcode, const char *msg)
 
 void __updateChecker()
 {
+	// Handle default config or old config
+	if (g_gameConfig.GetBool(GameConfigKeys::OnlyRelease))
+	{
+		g_gameConfig.Set(GameConfigKeys::UpdateChannel, "release");
+		g_gameConfig.Set(GameConfigKeys::OnlyRelease, false);
+	}
+
+	String channel = g_gameConfig.GetString(GameConfigKeys::UpdateChannel);
+
+    // For some reason the github actions have the branch as HEAD?
+    if (channel == "HEAD")
+    {
+		g_gameConfig.Set(GameConfigKeys::UpdateChannel, "master");
+    }
 
 	ProfilerScope $1("Check for updates");
-	if (g_gameConfig.GetBool(GameConfigKeys::OnlyRelease))
+	if (channel == "release")
 	{
 		auto r = cpr::Get(cpr::Url{"https://api.github.com/repos/drewol/unnamed-sdvx-clone/releases/latest"});
 
-		Logf("Update check status code: %d", Logger::Normal, r.status_code);
+		Logf("Update check status code: %d", Logger::Severity::Normal, r.status_code);
 		if (r.status_code != 200)
 		{
-			Logf("Failed to get update information: %s", Logger::Error, r.error.message.c_str());
+			Logf("Failed to get update information: %s", Logger::Severity::Error, r.error.message.c_str());
 		}
 		else
 		{
@@ -495,7 +636,7 @@ void __updateChecker()
 			}
 			catch (const std::exception &e)
 			{
-				Logf("Failed to parse version json: \"%s\"", Logger::Error, e.what());
+				Logf("Failed to parse version json: \"%s\"", Logger::Severity::Error, e.what());
 				return;
 			}
 
@@ -530,19 +671,20 @@ void __updateChecker()
 		auto response = cpr::Get(cpr::Url{"https://api.github.com/repos/drewol/unnamed-sdvx-clone/actions/runs"});
 		if (response.status_code != 200)
 		{
-			Logf("Failed to get update information: %s", Logger::Error, response.error.message.c_str());
+			Logf("Failed to get update information: %s", Logger::Severity::Error, response.error.message.c_str());
 			return;
 		}
 
 		auto commits = nlohmann::json::parse(response.text);
 		String current_hash;
 		String(GIT_COMMIT).Split("_", nullptr, &current_hash);
+		String current_branch = channel;
 
 		if (commits.contains("message"))
 		{
 			String errormsg;
 			commits.at("message").get_to(errormsg);
-			Logf("Failed to get update information: %s", Logger::Warning, *errormsg);
+			Logf("Failed to get update information: %s", Logger::Severity::Warning, *errormsg);
 			return;
 		}
 
@@ -556,9 +698,14 @@ void __updateChecker()
 			String status;
 			commit.at("status").get_to(status);
 			String conclusion;
+			if (commit.at("conclusion").is_null())
+			{
+				//not built yet
+				continue;
+			}
 			commit.at("conclusion").get_to(conclusion);
 
-			if (branch == "master" && status == "completed" && conclusion == "success")
+			if (branch == current_branch && status == "completed" && conclusion == "success")
 			{
 				String new_hash;
 				commit.at("head_sha").get_to(new_hash);
@@ -572,19 +719,33 @@ void __updateChecker()
 					String updateUrl = "https://github.com/drewol/unnamed-sdvx-clone";
 					if (response.status_code != 200)
 					{
-						Logf("Failed to get update information: %s", Logger::Warning, response.error.message.c_str());
+						Logf("Failed to get update information: %s", Logger::Severity::Warning, response.error.message.c_str());
 					}
 					else
 					{
 						auto commit_status = nlohmann::json::parse(response.text);
 						commit_status.at("html_url").get_to(updateUrl);
 					}
-					g_application->SetUpdateAvailable(new_hash.substr(0, 7), updateUrl, "http://drewol.me/Downloads/Game.zip");
+					if (current_branch == "master")
+						g_application->SetUpdateAvailable(new_hash.substr(0, 7), updateUrl, "http://drewol.me/Downloads/Game.zip");
+					else
+						g_application->SetUpdateAvailable(new_hash.substr(0, 7), updateUrl, "https://builds.drewol.me/" + current_branch + "/Game");
 					return;
 				}
 			}
 		}
 #endif
+	}
+}
+
+void Application::CheckForUpdate()
+{
+	m_hasUpdate = false;
+	if (g_gameConfig.GetBool(GameConfigKeys::CheckForUpdates))
+	{
+		if (m_updateThread.joinable())
+			m_updateThread.join();
+		m_updateThread = Thread(__updateChecker);
 	}
 }
 
@@ -606,15 +767,40 @@ bool Application::m_Init()
 {
 	ProfilerScope $("Application Setup");
 
-	Logf("Version: %d.%d.%d", Logger::Info, VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH);
+	String version = Utility::Sprintf("%d.%d.%d", VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH);
+	Logf("Version: %s", Logger::Severity::Info, version.c_str());
 
 #ifdef EMBEDDED
 	Log("Embeedded version.");
 #endif
 
 #ifdef GIT_COMMIT
-	Logf("Git commit: %s", Logger::Info, GIT_COMMIT);
+	Logf("Git commit: %s", Logger::Severity::Info, GIT_COMMIT);
 #endif // GIT_COMMIT
+
+#ifdef _WIN32
+#ifdef CRASHDUMP
+	google_breakpad::CustomInfoEntry kCustomInfoEntries[]{
+		google_breakpad::CustomInfoEntry(L"version", std::wstring(version.begin(), version.end()).c_str()),
+#ifdef GIT_COMMIT
+		google_breakpad::CustomInfoEntry(L"git", L"" GIT_COMMIT),
+#else
+		CustomInfoEntry("git", ""),
+#endif
+	};
+	google_breakpad::CustomClientInfo custom_info = {kCustomInfoEntries, 2};
+	//CustomClientInfo custom_info
+	auto handler = new google_breakpad::ExceptionHandler(
+		L".\\crash_dumps",
+		NULL,
+		NULL,
+		NULL,
+		google_breakpad::ExceptionHandler::HANDLER_ALL,
+		MiniDumpNormal,
+		(const wchar_t *)nullptr,
+		&custom_info);
+#endif
+#endif
 
 	// Must have command line
 	assert(m_commandLine.size() >= 1);
@@ -632,11 +818,17 @@ bool Application::m_Init()
 		}
 	}
 
+	// Set the locale so that functions such as `fopen` use UTF-8.
+	{
+		String prevLocale = setlocale(LC_CTYPE, nullptr);
+		setlocale(LC_CTYPE, ".UTF-8");
+
+		Logf("The locale was changed from %s to %s", Logger::Severity::Info, prevLocale.c_str(), setlocale(LC_CTYPE, nullptr));
+	}
+
 	// Load config
 	if (!m_LoadConfig())
-	{
-		Log("Failed to load config file", Logger::Warning);
-	}
+		Log("Failed to load config file", Logger::Severity::Warning);
 
 	// Job sheduler
 	g_jobSheduler = new JobSheduler();
@@ -644,11 +836,12 @@ bool Application::m_Init()
 	m_allowMapConversion = false;
 	bool debugMute = false;
 	bool startFullscreen = false;
-	uint32 fullscreenMonitor = -1;
+	int32 fullscreenMonitor = -1;
 
 	// Fullscreen settings from config
 	if (g_gameConfig.GetBool(GameConfigKeys::Fullscreen))
 		startFullscreen = true;
+
 	fullscreenMonitor = g_gameConfig.GetInt(GameConfigKeys::FullscreenMonitorIndex);
 
 	// Flags read _after_ config load
@@ -688,15 +881,24 @@ bool Application::m_Init()
 		g_gameConfig.GetInt(GameConfigKeys::ScreenWidth),
 		g_gameConfig.GetInt(GameConfigKeys::ScreenHeight));
 	g_aspectRatio = (float)g_resolution.x / (float)g_resolution.y;
+
 	int samplecount = g_gameConfig.GetInt(GameConfigKeys::AntiAliasing);
 	if (samplecount > 0)
 		samplecount = 1 << samplecount;
+
 	g_gameWindow = new Graphics::Window(g_resolution, samplecount);
+
+	// Versioning up config uses some SDL util functions, so it must be called after SDL is initialized.
+	// SDL is initialized in the constructor of Graphics::Window.
+	// The awkward placement of this call may be avoided by initializing SDL earlier, but to avoid unwanted side-effects I'll put this here for now.
+	this->m_UpdateConfigVersion();
+
 	g_gameWindow->Show();
 
 	g_gameWindow->OnKeyPressed.Add(this, &Application::m_OnKeyPressed);
 	g_gameWindow->OnKeyReleased.Add(this, &Application::m_OnKeyReleased);
 	g_gameWindow->OnResized.Add(this, &Application::m_OnWindowResized);
+	g_gameWindow->OnMoved.Add(this, &Application::m_OnWindowMoved);
 	g_gameWindow->OnFocusChanged.Add(this, &Application::m_OnFocusChanged);
 
 	// Initialize Input
@@ -711,18 +913,16 @@ bool Application::m_Init()
 	if (!Path::FileExists(Path::Absolute("skins/" + m_skin)))
 	{
 		m_skin = "Default";
+		g_gameConfig.Set(GameConfigKeys::Skin, m_skin);
 	}
 
 	g_skinConfig = new SkinConfig(m_skin);
+
 	// Window cursor
 	Image cursorImg = ImageRes::Create(Path::Absolute("skins/" + m_skin + "/textures/cursor.png"));
 	g_gameWindow->SetCursor(cursorImg, Vector2i(5, 5));
 
-	if (startFullscreen)
-		g_gameWindow->SwitchFullscreen(
-			g_gameConfig.GetInt(GameConfigKeys::ScreenWidth), g_gameConfig.GetInt(GameConfigKeys::ScreenHeight),
-			g_gameConfig.GetInt(GameConfigKeys::FullScreenWidth), g_gameConfig.GetInt(GameConfigKeys::FullScreenHeight),
-			fullscreenMonitor, g_gameConfig.GetBool(GameConfigKeys::WindowedFullscreen));
+	m_UpdateWindowPosAndShape(fullscreenMonitor, startFullscreen, g_gameConfig.GetBool(GameConfigKeys::AdjustWindowPositionOnStartup));
 
 	// Set render state variables
 	m_renderStateBase.aspectRatio = g_aspectRatio;
@@ -739,18 +939,18 @@ bool Application::m_Init()
 		{
 			if (exclusive)
 			{
-				Log("Failed to open in WASAPI Exclusive mode, attempting shared mode.", Logger::Warning);
+				Log("Failed to open in WASAPI Exclusive mode, attempting shared mode.", Logger::Severity::Warning);
 				g_gameWindow->ShowMessageBox("WASAPI Exclusive mode error.", "Failed to open in WASAPI Exclusive mode, attempting shared mode.", 1);
 				if (!g_audio->Init(false))
 				{
-					Log("Audio initialization failed", Logger::Error);
+					Log("Audio initialization failed", Logger::Severity::Error);
 					delete g_audio;
 					return false;
 				}
 			}
 			else
 			{
-				Log("Audio initialization failed", Logger::Error);
+				Log("Audio initialization failed", Logger::Severity::Error);
 				delete g_audio;
 				return false;
 			}
@@ -771,7 +971,7 @@ bool Application::m_Init()
 		g_gl = new OpenGL();
 		if (!g_gl->Init(*g_gameWindow, g_gameConfig.GetInt(GameConfigKeys::AntiAliasing)))
 		{
-			Log("Failed to create OpenGL context", Logger::Error);
+			Log("Failed to create OpenGL context", Logger::Severity::Error);
 			return false;
 		}
 #ifdef EMBEDDED
@@ -790,10 +990,8 @@ bool Application::m_Init()
 		nvgCreateFont(g_guiState.vg, "fallback", *Path::Absolute("fonts/NotoSansCJKjp-Regular.otf"));
 	}
 
-	if (g_gameConfig.GetBool(GameConfigKeys::CheckForUpdates))
-	{
-		m_updateThread = Thread(__updateChecker);
-	}
+	CheckForUpdate();
+
 
 	m_InitDiscord();
 
@@ -803,8 +1001,7 @@ bool Application::m_Init()
 	m_fillMaterial->opaque = false;
 	CheckedLoad(m_guiTex = LoadMaterial("guiTex"));
 	m_guiTex->opaque = false;
-	m_gauge = new HealthGauge();
-	LoadGauge(false);
+
 
 	//m_skinHtpp = new SkinHttp();
 	// call the initial OnWindowResized now that we have intialized OpenGL
@@ -818,32 +1015,46 @@ bool Application::m_Init()
 		g_transition = TransitionScreen::Create();
 	}
 
+	if (g_gameConfig.GetBool(GameConfigKeys::KeepFontTexture)) {
+		BasicNuklearGui::StartFontInit();
+		m_fontBakeThread = Thread(BasicNuklearGui::BakeFontWithLock);
+	}
+
 	///TODO: check if directory exists already?
 	Path::CreateDir(Path::Absolute("screenshots"));
 	Path::CreateDir(Path::Absolute("songs"));
 	Path::CreateDir(Path::Absolute("replays"));
-
+	Path::CreateDir(Path::Absolute("crash_dumps"));
+	Logger::Get().SetLogLevel(g_gameConfig.GetEnum<Logger::Enum_Severity>(GameConfigKeys::LogLevel));
 	return true;
 }
 void Application::m_MainLoop()
 {
 	Timer appTimer;
-	m_lastRenderTime = 0.0f;
+	m_deltaTime = 0.5f;
+	Timer frameTimer;
 	while (true)
 	{
+		m_appTime = appTimer.SecondsAsFloat();
+		frameTimer.Restart();
 		//run discord callbacks
 		Discord_RunCallbacks();
 
 		// Process changes in the list of items
 		bool restoreTop = false;
-		for (auto &ch : g_tickableChanges)
+
+		// Flush current changes from g_tickables in case another tickable needs to be added while destroying or initializing another tickable
+		Vector<TickableChange> currentChanges(g_tickableChanges);
+		g_tickableChanges.clear();
+
+		for (auto &ch : currentChanges)
 		{
 			if (ch.mode == TickableChange::Added)
 			{
 				assert(ch.tickable);
 				if (!ch.tickable->DoInit())
 				{
-					Log("Failed to add IApplicationTickable", Logger::Error);
+					Log("Failed to add IApplicationTickable", Logger::Severity::Error);
 					delete ch.tickable;
 					continue;
 				}
@@ -882,16 +1093,15 @@ void Application::m_MainLoop()
 			g_tickables.back()->m_Restore();
 
 		// Application should end, no more active screens
-		if (!g_tickableChanges.empty() && g_tickables.empty())
+		if (g_tickableChanges.empty() && g_tickables.empty())
 		{
-			Log("No more IApplicationTickables, shutting down", Logger::Warning);
+			Log("No more IApplicationTickables, shutting down", Logger::Severity::Warning);
 			return;
 		}
-		g_tickableChanges.clear();
 
 		// Determine target tick rates for update and render
 		int32 targetFPS = 120; // Default to 120 FPS
-		float targetRenderTime = 0.0f;
+		uint32 targetRenderTime = 0;
 		for (auto tickable : g_tickables)
 		{
 			int32 tempTarget = 0;
@@ -901,45 +1111,54 @@ void Application::m_MainLoop()
 			}
 		}
 		if (targetFPS > 0)
-			targetRenderTime = 1.0f / (float)targetFPS;
+			targetRenderTime = 1000000 / targetFPS;
 
 		// Main loop
 		float currentTime = appTimer.SecondsAsFloat();
-		float timeSinceRender = currentTime - m_lastRenderTime;
-		if (timeSinceRender > targetRenderTime)
-		{
-			// Calculate actual deltatime for timing calculations
-			currentTime = appTimer.SecondsAsFloat();
-			float actualDeltaTime = currentTime - m_lastRenderTime;
-			g_avgRenderDelta = g_avgRenderDelta * 0.98f + actualDeltaTime * 0.02f; // Calculate avg
 
-			m_deltaTime = actualDeltaTime;
-			m_lastRenderTime = currentTime;
+		g_avgRenderDelta = g_avgRenderDelta * 0.98f + m_deltaTime * 0.02f; // Calculate avg
 
-			// Set time in render state
-			m_renderStateBase.time = currentTime;
+		// Set time in render state
+		m_renderStateBase.time = currentTime;
 
-			// Also update window in render loop
-			if (!g_gameWindow->Update())
-				return;
+		// Also update window in render loop
+		if (!g_gameWindow->Update())
+			return;
 
-			m_Tick();
-			timeSinceRender = 0.0f;
+		m_Tick();
 
-			// Garbage collect resources
-			ResourceManagers::TickAll();
-		}
+		// Garbage collect resources
+		ResourceManagers::TickAll();
 
 		// Tick job sheduler
 		// processed callbacks for finished tasks
 		g_jobSheduler->Update();
 
-		if (timeSinceRender < targetRenderTime)
+		//This FPS limiter seems unstable over 500fps
+		uint32 frameTime = frameTimer.Microseconds();
+		if (frameTime < targetRenderTime)
 		{
-			float timeLeft = (targetRenderTime - timeSinceRender);
-			uint32 sleepMicroSecs = (uint32)(timeLeft * 1000000.0f * 0.75f);
-			std::this_thread::sleep_for(std::chrono::microseconds(sleepMicroSecs));
+			uint32 timeLeft = (targetRenderTime - frameTime);
+			uint32 sleepMicroSecs = (uint32)(timeLeft * m_fpsTargetSleepMult * 0.75);
+			if (sleepMicroSecs > 1000)
+			{
+				uint32 sleepStart = frameTimer.Microseconds();
+				std::this_thread::sleep_for(std::chrono::microseconds(sleepMicroSecs));
+				float actualSleep = frameTimer.Microseconds() - sleepStart;
+
+				m_fpsTargetSleepMult += ((float)timeLeft - (float)actualSleep / 0.75) / 500000.f;
+				m_fpsTargetSleepMult = Math::Clamp(m_fpsTargetSleepMult, 0.0f, 1.0f);
+			}
+
+			do
+			{
+				std::this_thread::yield();
+			} while (frameTimer.Microseconds() < targetRenderTime);
 		}
+		// Swap buffers
+		g_gl->SwapBuffers();
+
+		m_deltaTime = frameTimer.SecondsAsFloat();
 	}
 }
 
@@ -951,6 +1170,9 @@ void Application::m_Tick()
 	// Process async lua http callbacks
 	m_skinHttp.ProcessCallbacks();
 
+	// likewise for IR
+	m_skinIR.ProcessCallbacks();
+
 	// Tick all items
 	for (auto &tickable : g_tickables)
 	{
@@ -960,6 +1182,14 @@ void Application::m_Tick()
 	// Not minimized / Valid resolution
 	if (g_resolution.x > 0 && g_resolution.y > 0)
 	{
+		//Clear out opengl errors
+		GLenum glErr = glGetError();
+		while (glErr != GL_NO_ERROR)
+		{
+			Logf("OpenGL Error: %p", Logger::Severity::Debug, glErr);
+			glErr = glGetError();
+		}
+
 		glClearColor(0, 0, 0, 0);
 		glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 		nvgBeginFrame(g_guiState.vg, g_resolution.x, g_resolution.y, 1);
@@ -978,7 +1208,6 @@ void Application::m_Tick()
 		g_guiState.scissor = Rect(0, 0, -1, -1);
 		g_guiState.imageTint = nvgRGB(255, 255, 255);
 		// Render all items
-		assert(!g_tickables.empty());
 		for (auto &tickable : g_tickables)
 		{
 			tickable->Render(m_deltaTime);
@@ -994,18 +1223,21 @@ void Application::m_Tick()
 			nvgFillColor(g_guiState.vg, nvgRGB(0, 200, 255));
 			String fpsText = Utility::Sprintf("%.1fFPS", GetRenderFPS());
 			nvgText(g_guiState.vg, g_resolution.x - 5, g_resolution.y - 5, fpsText.c_str(), 0);
+			// Visualize m_fpsTargetSleepMult for debugging
+			//nvgBeginPath(g_guiState.vg);
+			//float h = m_fpsTargetSleepMult * g_resolution.y;
+			//nvgRect(g_guiState.vg, g_resolution.x - 10, g_resolution.y - h, 10, h);
+			//nvgFill(g_guiState.vg);
 		}
 		nvgEndFrame(g_guiState.vg);
 		m_renderQueueBase.Process();
 		glCullFace(GL_FRONT);
-		// Swap buffers
-		g_gl->SwapBuffers();
 	}
 
 	if (m_needSkinReload)
 	{
-		ReloadSkin();
 		m_needSkinReload = false;
+		ReloadSkin();
 	}
 }
 
@@ -1052,11 +1284,7 @@ void Application::m_Cleanup()
 		delete g_skinConfig;
 		g_skinConfig = nullptr;
 	}
-	if (m_gauge)
-	{
-		delete m_gauge;
-		m_gauge = nullptr;
-	}
+
 	if (g_transition)
 	{
 		delete g_transition;
@@ -1074,7 +1302,15 @@ void Application::m_Cleanup()
 		delete img.second;
 	}
 
-	Graphics::FontRes::FreeLibrary();
+	sharedTextures.clear();
+	// Clear fonts before freeing library
+	for (auto &f : g_guiState.fontCahce)
+	{
+		f.second.reset();
+	}
+	g_guiState.currentFont.reset();
+
+	m_fonts.clear();
 
 	Discord_Shutdown();
 
@@ -1084,8 +1320,12 @@ void Application::m_Cleanup()
 	nvgDeleteGL3(g_guiState.vg);
 #endif
 
+	Graphics::FontRes::FreeLibrary();
 	if (m_updateThread.joinable())
 		m_updateThread.join();
+
+	if (m_fontBakeThread.joinable())
+		m_fontBakeThread.join();
 
 	// Finally, save config
 	m_SaveConfig();
@@ -1093,7 +1333,8 @@ void Application::m_Cleanup()
 
 class Game *Application::LaunchMap(const String &mapPath)
 {
-	Game *game = Game::Create(mapPath, GameFlags::None);
+	PlaybackOptions opt;
+	Game *game = Game::Create(mapPath, opt);
 	g_transition->TransitionTo(game);
 	return game;
 }
@@ -1104,6 +1345,8 @@ void Application::Shutdown()
 
 void Application::AddTickable(class IApplicationTickable *tickable, class IApplicationTickable *insertBefore)
 {
+	Log("Adding tickable", Logger::Severity::Debug);
+
 	TickableChange &change = g_tickableChanges.Add();
 	change.mode = TickableChange::Added;
 	change.tickable = tickable;
@@ -1111,6 +1354,8 @@ void Application::AddTickable(class IApplicationTickable *tickable, class IAppli
 }
 void Application::RemoveTickable(IApplicationTickable *tickable, bool noDelete)
 {
+	Logf("Removing tickable: %s", Logger::Severity::Debug, noDelete ? "NoDelete" : "Delete");
+
 	TickableChange &change = g_tickableChanges.Add();
 	if (noDelete)
 	{
@@ -1192,6 +1437,8 @@ Material Application::LoadMaterial(const String &name, const String &path)
 		assert(gshader);
 		ret->AssignShader(ShaderType::Geometry, gshader);
 	}
+	if (!ret)
+		g_gameWindow->ShowMessageBox("Shader Error", "Could not load shaders "+path+name+".vs and "+path+name+".fs", 0);
 	assert(ret);
 	return ret;
 }
@@ -1276,11 +1523,26 @@ void Application::SetScriptPath(lua_State *s)
 	std::string cur_path = lua_tostring(s, -1); // grab path string from top of stack
 	cur_path.append(";");						// do your path magic here
 	cur_path.append(lua_path.c_str());
-	lua_pop(s, 1);						 // get rid of the string on the stack we just pushed on line 5
+	lua_pop(s, 1);						 // get rid of the string on the stack e just pushed on line 5
 	lua_pushstring(s, cur_path.c_str()); // push the new one
 	lua_setfield(s, -2, "path");		 // set the field "path" in table at -2 with value at top of stack
 	lua_pop(s, 1);						 // get rid of package table from top of stack
 }
+
+bool Application::ScriptError(const String& name, lua_State* L)
+{
+	Logf("Lua error: %s", Logger::Severity::Error, lua_tostring(L, -1)); //TODO: Don't spam the same message
+	if (g_gameConfig.GetBool(GameConfigKeys::SkinDevMode))
+	{
+		String message = Utility::Sprintf("Lua error: %s \n\nReload Script?", lua_tostring(L, -1));
+		if (g_gameWindow->ShowYesNoMessage("Lua Error", message)) {
+			return ReloadScript(name, L);
+		}
+	}
+
+	return false;
+}
+
 
 lua_State *Application::LoadScript(const String &name, bool noError)
 {
@@ -1292,38 +1554,65 @@ lua_State *Application::LoadScript(const String &name, bool noError)
 	String commonPath = "skins/" + m_skin + "/scripts/" + "common.lua";
 	path = Path::Absolute(path);
 	commonPath = Path::Absolute(commonPath);
+
+	// If we can't find this file, copy it from the default skin
+	if (!Path::FileExists(path))
+	{
+		String defaultPath = Path::Absolute("skins/Default/scripts/" + name + ".lua");
+		if (Path::FileExists(defaultPath))
+		{
+			bool copyDefault = g_gameWindow->ShowYesNoMessage("Missing " + name + ".lua", "No " + name + ".lua file could be found, suggested solution:\n"
+																										 "Would you like to copy \"scripts/" +
+																							  name + ".lua\" from the default skin to your current skin?");
+			if (copyDefault)
+				Path::Copy(defaultPath, path);
+		}
+	}
+
 	SetLuaBindings(s);
 	if (luaL_dofile(s, commonPath.c_str()) || luaL_dofile(s, path.c_str()))
 	{
-		Logf("Lua error: %s", Logger::Error, lua_tostring(s, -1));
+		Logf("Lua error: %s", Logger::Severity::Error, lua_tostring(s, -1));
 		if (!noError)
 			g_gameWindow->ShowMessageBox("Lua Error", lua_tostring(s, -1), 0);
 		lua_close(s);
 		return nullptr;
 	}
+
 	return s;
 }
 
-void Application::ReloadScript(const String &name, lua_State *L)
+bool Application::ReloadScript(const String &name, lua_State *L)
 {
 	SetScriptPath(L);
 	String path = "skins/" + m_skin + "/scripts/" + name + ".lua";
 	String commonPath = "skins/" + m_skin + "/scripts/" + "common.lua";
 	DisposeGUI(L);
 	m_skinHttp.ClearState(L);
+	m_skinIR.ClearState(L);
 	path = Path::Absolute(path);
 	commonPath = Path::Absolute(commonPath);
 	if (luaL_dofile(L, commonPath.c_str()) || luaL_dofile(L, path.c_str()))
 	{
-		Logf("Lua error: %s", Logger::Error, lua_tostring(L, -1));
+		Logf("Lua error: %s", Logger::Severity::Error, lua_tostring(L, -1));
 		g_gameWindow->ShowMessageBox("Lua Error", lua_tostring(L, -1), 0);
 		lua_close(L);
-		assert(false);
+		return false;
 	}
+	return true;
 }
 
 void Application::ReloadSkin()
 {
+	//remove all tickables
+	for (auto *t : g_tickables)
+	{
+		t->m_Suspend();
+		delete t;
+	}
+	g_tickables.clear();
+	g_tickableChanges.clear();
+
 	m_skin = g_gameConfig.GetString(GameConfigKeys::Skin);
 	if (g_skinConfig)
 	{
@@ -1336,6 +1625,7 @@ void Application::ReloadSkin()
 	g_guiState.nextPaintId.clear();
 	g_guiState.paintCache.clear();
 	m_jacketImages.clear();
+	sharedTextures.clear();
 
 	for (auto &sample : m_samples)
 	{
@@ -1349,61 +1639,44 @@ void Application::ReloadSkin()
 		g_transition = TransitionScreen::Create();
 	}
 
-	//remove all tickables
-	for (auto *t : g_tickables)
-	{
-		RemoveTickable(t);
-	}
+	//#ifdef EMBEDDED
+	//	nvgDeleteGLES2(g_guiState.vg);
+	//#else
+	//	nvgDeleteGL3(g_guiState.vg);
+	//#endif
+	//
+	//#ifdef EMBEDDED
+	//#ifdef _DEBUG
+	//	g_guiState.vg = nvgCreateGLES2(NVG_DEBUG);
+	//#else
+	//	g_guiState.vg = nvgCreateGLES2(0);
+	//#endif
+	//#else
+	//#ifdef _DEBUG
+	//	g_guiState.vg = nvgCreateGL3(NVG_DEBUG);
+	//#else
+	//	g_guiState.vg = nvgCreateGL3(0);
+	//#endif
+	//#endif
+
+	//nvgCreateFont(g_guiState.vg, "fallback", *Path::Absolute("fonts/NotoSansCJKjp-Regular.otf"));
 
 	//push new titlescreen
+	m_gaugeRemovedWarn = true;
 	TitleScreen *t = TitleScreen::Create();
 	AddTickable(t);
-
-#ifdef EMBEDDED
-	nvgDeleteGLES2(g_guiState.vg);
-#else
-	nvgDeleteGL3(g_guiState.vg);
-#endif
-
-#ifdef EMBEDDED
-#ifdef _DEBUG
-	g_guiState.vg = nvgCreateGLES2(NVG_DEBUG);
-#else
-	g_guiState.vg = nvgCreateGLES2(0);
-#endif
-#else
-#ifdef _DEBUG
-	g_guiState.vg = nvgCreateGL3(NVG_DEBUG);
-#else
-	g_guiState.vg = nvgCreateGL3(0);
-#endif
-#endif
-
-	nvgCreateFont(g_guiState.vg, "fallback", *Path::Absolute("fonts/NotoSansCJKjp-Regular.otf"));
 }
 void Application::DisposeLua(lua_State *state)
 {
 	DisposeGUI(state);
 	m_skinHttp.ClearState(state);
+	m_skinIR.ClearState(state);
 	lua_close(state);
 }
-void Application::SetGaugeColor(int i, Color c)
-{
-	m_gaugeColors[i] = c;
-	if (m_gauge->colorBorder < 0.5f)
-	{
-		m_gauge->lowerColor = m_gaugeColors[2];
-		m_gauge->upperColor = m_gaugeColors[3];
-	}
-	else
-	{
-		m_gauge->lowerColor = m_gaugeColors[0];
-		m_gauge->upperColor = m_gaugeColors[1];
-	}
-}
+
 void Application::DiscordError(int errorCode, const char *message)
 {
-	Logf("[Discord] %s", Logger::Warning, message);
+	Logf("[Discord] %s", Logger::Severity::Warning, message);
 }
 
 void Application::DiscordPresenceMenu(String name)
@@ -1497,41 +1770,17 @@ void Application::JoinMultiFromInvite(String secret)
 	}
 }
 
-void Application::LoadGauge(bool hard)
-{
-	String gaugePath = "gauges/normal/";
-	if (hard)
-	{
-		gaugePath = "gauges/hard/";
-		m_gauge->colorBorder = 0.3f;
-		m_gauge->lowerColor = m_gaugeColors[2];
-		m_gauge->upperColor = m_gaugeColors[3];
-	}
-	else
-	{
-		m_gauge->colorBorder = 0.7f;
-		m_gauge->lowerColor = m_gaugeColors[0];
-		m_gauge->upperColor = m_gaugeColors[1];
-	}
-	m_gauge->fillTexture = LoadTexture(gaugePath + "gauge_fill.png");
-	m_gauge->frontTexture = LoadTexture(gaugePath + "gauge_front.png");
-	m_gauge->backTexture = LoadTexture(gaugePath + "gauge_back.png");
-	m_gauge->maskTexture = LoadTexture(gaugePath + "gauge_mask.png");
-	m_gauge->fillTexture->SetWrap(Graphics::TextureWrap::Clamp, Graphics::TextureWrap::Clamp);
-	m_gauge->frontTexture->SetWrap(Graphics::TextureWrap::Clamp, Graphics::TextureWrap::Clamp);
-	m_gauge->backTexture->SetWrap(Graphics::TextureWrap::Clamp, Graphics::TextureWrap::Clamp);
-	m_gauge->maskTexture->SetWrap(Graphics::TextureWrap::Clamp, Graphics::TextureWrap::Clamp);
-	m_gauge->fillMaterial = LoadMaterial("gauge");
-	m_gauge->fillMaterial->opaque = false;
-	m_gauge->baseMaterial = LoadMaterial("guiTex");
-	m_gauge->baseMaterial->opaque = false;
-}
 
-void Application::DrawGauge(float rate, float x, float y, float w, float h, float deltaTime)
+
+void Application::WarnGauge()
 {
-	m_gauge->rate = rate;
-	Mesh m = MeshGenerators::Quad(g_gl, Vector2(x, y), Vector2(w, h));
-	m_gauge->Render(m, deltaTime);
+	if (m_gaugeRemovedWarn)
+	{
+		g_gameWindow->ShowMessageBox("Gauge functions removed.",
+			"gfx.DrawGauge and gfx.SetGaugeColor have been removed in favour of drawing the gauge with the other gfx functions.\n"
+			"Please update your skin or contact the skin author.", 1);
+		m_gaugeRemovedWarn = false;
+	}
 }
 
 float Application::GetRenderFPS() const
@@ -1547,6 +1796,11 @@ Material Application::GetFontMaterial() const
 Material Application::GetGuiTexMaterial() const
 {
 	return m_guiTex;
+}
+
+Material Application::GetGuiFillMaterial() const
+{
+	return m_fillMaterial;
 }
 
 Transform Application::GetGUIProjection() const
@@ -1576,12 +1830,12 @@ void Application::PlayNamedSample(String name, bool loop)
 		}
 		else
 		{
-			Logf("Sample \"%s\" exists but is invalid.", Logger::Warning, *name);
+			Logf("Sample \"%s\" exists but is invalid.", Logger::Severity::Warning, *name);
 		}
 	}
 	else
 	{
-		Logf("No sample named \"%s\" found.", Logger::Warning, *name);
+		Logf("No sample named \"%s\" found.", Logger::Severity::Warning, *name);
 	}
 }
 void Application::StopNamedSample(String name)
@@ -1595,12 +1849,12 @@ void Application::StopNamedSample(String name)
 		}
 		else
 		{
-			Logf("Sample \"%s\" exists but is invalid.", Logger::Warning, *name);
+			Logf("Sample \"%s\" exists but is invalid.", Logger::Severity::Warning, *name);
 		}
 	}
 	else
 	{
-		Logf("No sample named \"%s\" found.", Logger::Warning, *name);
+		Logf("No sample named \"%s\" found.", Logger::Severity::Warning, *name);
 	}
 }
 int Application::IsNamedSamplePlaying(String name)
@@ -1614,29 +1868,26 @@ int Application::IsNamedSamplePlaying(String name)
 		}
 		else
 		{
-			Logf("Sample \"%s\" exists but is invalid.", Logger::Warning, *name);
+			Logf("Sample \"%s\" exists but is invalid.", Logger::Severity::Warning, *name);
 			return -1;
 		}
 	}
 	else
 	{
-		Logf("No sample named \"%s\" found.", Logger::Warning, *name);
+		Logf("No sample named \"%s\" found.", Logger::Severity::Warning, *name);
 		return -1;
 	}
 }
-void Application::m_OnKeyPressed(int32 key)
+void Application::m_OnKeyPressed(SDL_Scancode code)
 {
 	// Fullscreen toggle
-	if (key == SDLK_RETURN)
+	if (code == SDL_SCANCODE_RETURN)
 	{
 		if ((g_gameWindow->GetModifierKeys() & ModifierKeys::Alt) == ModifierKeys::Alt)
 		{
-			g_gameWindow->SwitchFullscreen(
-				g_gameConfig.GetInt(GameConfigKeys::ScreenWidth), g_gameConfig.GetInt(GameConfigKeys::ScreenHeight),
-				g_gameConfig.GetInt(GameConfigKeys::FullScreenWidth), g_gameConfig.GetInt(GameConfigKeys::FullScreenHeight),
-				-1, g_gameConfig.GetBool(GameConfigKeys::WindowedFullscreen));
-			g_gameConfig.Set(GameConfigKeys::Fullscreen, g_gameWindow->IsFullscreen());
-			//m_OnWindowResized(g_gameWindow->GetWindowSize());
+			g_gameConfig.Set(GameConfigKeys::Fullscreen, !g_gameWindow->IsFullscreen());
+			m_UpdateWindowPosAndShape();
+
 			return;
 		}
 	}
@@ -1644,15 +1895,15 @@ void Application::m_OnKeyPressed(int32 key)
 	// Pass key to application
 	for (auto it = g_tickables.rbegin(); it != g_tickables.rend();)
 	{
-		(*it)->OnKeyPressed(key);
+		(*it)->OnKeyPressed(code);
 		break;
 	}
 }
-void Application::m_OnKeyReleased(int32 key)
+void Application::m_OnKeyReleased(SDL_Scancode code)
 {
 	for (auto it = g_tickables.rbegin(); it != g_tickables.rend();)
 	{
-		(*it)->OnKeyReleased(key);
+		(*it)->OnKeyReleased(code);
 		break;
 	}
 }
@@ -1709,6 +1960,43 @@ void Application::m_OnWindowResized(const Vector2i &newSize)
 	}
 }
 
+void Application::m_OnWindowMoved(const Vector2i& newPos)
+{
+	if (g_gameWindow->IsActive() && !g_gameWindow->IsFullscreen())
+	{
+		g_gameConfig.Set(GameConfigKeys::ScreenX, newPos.x);
+		g_gameConfig.Set(GameConfigKeys::ScreenY, newPos.y);
+	}
+}
+
+void Application::m_UpdateWindowPosAndShape()
+{
+	m_UpdateWindowPosAndShape(
+		g_gameConfig.GetInt(GameConfigKeys::FullscreenMonitorIndex),
+		g_gameConfig.GetBool(GameConfigKeys::Fullscreen),
+		false
+	);
+}
+
+void Application::m_UpdateWindowPosAndShape(int32 monitorId, bool fullscreen, bool ensureInBound)
+{
+	const Vector2i windowPos(g_gameConfig.GetInt(GameConfigKeys::ScreenX), g_gameConfig.GetInt(GameConfigKeys::ScreenY));
+	const Vector2i windowSize(g_gameConfig.GetInt(GameConfigKeys::ScreenWidth), g_gameConfig.GetInt(GameConfigKeys::ScreenHeight));
+	const Vector2i fullscreenSize(g_gameConfig.GetInt(GameConfigKeys::FullScreenWidth), g_gameConfig.GetInt(GameConfigKeys::FullScreenHeight));
+
+	g_gameWindow->SetPosAndShape(Graphics::Window::PosAndShape {
+		fullscreen, g_gameConfig.GetBool(GameConfigKeys::WindowedFullscreen),
+		windowPos, windowSize, monitorId, fullscreenSize
+	}, ensureInBound);
+	
+	if (ensureInBound && !fullscreen)
+	{
+		Vector2i windowPos = g_gameWindow->GetWindowPos();
+		g_gameConfig.Set(GameConfigKeys::ScreenX, windowPos.x);
+		g_gameConfig.Set(GameConfigKeys::ScreenY, windowPos.y);
+	}
+}
+
 void Application::m_OnFocusChanged(bool focused)
 {
 	bool muteUnfocused = g_gameConfig.GetBool(GameConfigKeys::MuteUnfocused);
@@ -1722,7 +2010,7 @@ void Application::m_OnFocusChanged(bool focused)
 	}
 }
 
-int Application::FastText(String inputText, float x, float y, int size, int align)
+int Application::FastText(String inputText, float x, float y, int size, int align, const Color &color /* = Color::White */)
 {
 	WString text = Utility::ConvertToWString(inputText);
 	String fontpath = Path::Normalize(Path::Absolute("fonts/settings/NotoSans-Regular.ttf"));
@@ -1751,7 +2039,7 @@ int Application::FastText(String inputText, float x, float y, int size, int alig
 	}
 
 	MaterialParameterSet params;
-	params.SetParameter("color", Vector4(1.f, 1.f, 1.f, 1.f));
+	params.SetParameter("color", color);
 	g_application->GetRenderQueueBase()->Draw(textTransform, te, g_application->GetFontMaterial(), params);
 	return 0;
 }
@@ -1793,31 +2081,24 @@ static int lLog(lua_State *L)
 	return 0;
 }
 
-static int lDrawGauge(lua_State *L)
-{
-	float rate, x, y, w, h, deltaTime;
-	rate = luaL_checknumber(L, 1);
-	x = luaL_checknumber(L, 2);
-	y = luaL_checknumber(L, 3);
-	w = luaL_checknumber(L, 4);
-	h = luaL_checknumber(L, 5);
-	deltaTime = luaL_checknumber(L, 6);
-	g_application->DrawGauge(rate, x, y, w, h, deltaTime);
-	return 0;
-}
-
 static int lGetButton(lua_State *L /* int button */)
 {
-	int button = luaL_checkinteger(L, 1);
-	lua_pushboolean(L, g_input.GetButton((Input::Button)button));
-	return 1;
+    int button = luaL_checkinteger(L, 1);
+    if (g_application->autoplayInfo
+        && (g_application->autoplayInfo->IsAutoplayButtons()) && button < 6)
+        lua_pushboolean(L, g_application->autoplayInfo->buttonAnimationTimer[button] > 0);
+    else
+        lua_pushboolean(L, g_input.GetButton((Input::Button)button));
+    return 1;
 }
+
 static int lGetKnob(lua_State *L /* int knob */)
 {
 	int knob = luaL_checkinteger(L, 1);
 	lua_pushnumber(L, g_input.GetAbsoluteLaser(knob));
 	return 1;
 }
+
 static int lGetUpdateAvailable(lua_State *L)
 {
 	Vector<String> info = g_application->GetUpdateAvailable();
@@ -1974,15 +2255,9 @@ static int lLoadWebImageJob(lua_State *L /* char* url, int placeholder, int w = 
 	return 1;
 }
 
-static int lSetGaugeColor(lua_State *L /*int colorIndex, int r, int g, int b*/)
+static int lWarnGauge(lua_State *L)
 {
-	int colorindex, r, g, b;
-	colorindex = luaL_checkinteger(L, 1);
-	r = luaL_checkinteger(L, 2);
-	g = luaL_checkinteger(L, 3);
-	b = luaL_checkinteger(L, 4);
-
-	g_application->SetGaugeColor(colorindex, Colori(r, g, b));
+	g_application->WarnGauge();
 	return 0;
 }
 
@@ -2084,6 +2359,73 @@ static int lGetSkinSetting(lua_State *L /*String key*/)
 	}
 }
 
+int lLoadSharedTexture(lua_State* L) {
+	Ref<SharedTexture> newTexture = Utility::MakeRef(new SharedTexture());
+
+
+	const auto key = luaL_checkstring(L, 1);
+	const auto path = luaL_checkstring(L, 2);
+	int imageflags = 0;
+	if (lua_isinteger(L, 3)) {
+		imageflags = luaL_checkinteger(L, 3);
+	}
+
+	newTexture->nvgTexture = nvgCreateImage(g_guiState.vg, path, imageflags);
+	newTexture->texture = g_application->LoadTexture(path, true);
+
+	if (newTexture->Valid())
+	{
+		g_application->sharedTextures.Add(key, newTexture);
+	}
+	else {
+		lua_pushstring(L, *Utility::Sprintf("Failed to load shared texture with path: '%s', key: '%s'", path, key));
+		return lua_error(L);
+	}
+	
+	return 0;
+}
+
+int lLoadSharedSkinTexture(lua_State* L) {
+	Ref<SharedTexture> newTexture = Utility::MakeRef(new SharedTexture());
+	const auto key = luaL_checkstring(L, 1);
+	const auto filename = luaL_checkstring(L, 2);
+	int imageflags = 0;
+	if (lua_isinteger(L, 3)) {
+		imageflags = luaL_checkinteger(L, 3);
+	}
+
+
+	String path = "skins/" + g_application->GetCurrentSkin() + "/textures/" + filename;
+	path = Path::Absolute(path);
+
+	newTexture->nvgTexture = nvgCreateImage(g_guiState.vg, path.c_str(), imageflags);
+	newTexture->texture = g_application->LoadTexture(filename, false);
+
+	if (newTexture->Valid())
+	{
+		g_application->sharedTextures.Add(key, newTexture);
+	}
+	else {
+		return luaL_error(L, "Failed to load shared texture with path: '%s', key: '%s'", *path, *key);
+	}
+
+	return 0;
+}
+
+int lGetSharedTexture(lua_State* L) {
+	const auto key = luaL_checkstring(L, 1);
+
+	if (g_application->sharedTextures.Contains(key))
+	{
+		auto& t = g_application->sharedTextures.at(key);
+		lua_pushnumber(L, t->nvgTexture);
+		return 1;
+	}
+
+	
+	return 0;
+}
+
 void Application::SetLuaBindings(lua_State *state)
 {
 	auto pushFuncToTable = [&](const char *name, int (*func)(lua_State *)) {
@@ -2136,8 +2478,8 @@ void Application::SetLuaBindings(lua_State *state)
 		pushFuncToTable("Stroke", lStroke);
 		pushFuncToTable("StrokeColor", lStrokeColor);
 		pushFuncToTable("UpdateLabel", lUpdateLabel);
-		pushFuncToTable("DrawGauge", lDrawGauge);
-		pushFuncToTable("SetGaugeColor", lSetGaugeColor);
+		pushFuncToTable("DrawGauge", lWarnGauge);
+		pushFuncToTable("SetGaugeColor", lWarnGauge);
 		pushFuncToTable("RoundedRect", lRoundedRect);
 		pushFuncToTable("RoundedRectVarying", lRoundedRectVarying);
 		pushFuncToTable("Ellipse", lEllipse);
@@ -2170,6 +2512,9 @@ void Application::SetLuaBindings(lua_State *state)
 		pushFuncToTable("SetImageTint", lSetImageTint);
 		pushFuncToTable("LoadAnimation", lLoadAnimation);
 		pushFuncToTable("LoadSkinAnimation", lLoadSkinAnimation);
+		pushFuncToTable("LoadSharedTexture", lLoadSharedTexture);
+		pushFuncToTable("LoadSharedSkinTexture", lLoadSharedSkinTexture);
+		pushFuncToTable("GetSharedTexture", lGetSharedTexture);
 		pushFuncToTable("TickAnimation", lTickAnimation);
 		pushFuncToTable("ResetAnimation", lResetAnimation);
 		pushFuncToTable("GlobalCompositeOperation", lGlobalCompositeOperation);
@@ -2247,10 +2592,10 @@ void Application::SetLuaBindings(lua_State *state)
 		pushFuncToTable("SetSkinSetting", lSetSkinSetting);
 
 		//constants
-		pushIntToTable("LOGGER_INFO", Logger::Severity::Info);
-		pushIntToTable("LOGGER_NORMAL", Logger::Severity::Normal);
-		pushIntToTable("LOGGER_WARNING", Logger::Severity::Warning);
-		pushIntToTable("LOGGER_ERROR", Logger::Severity::Error);
+		pushIntToTable("LOGGER_INFO", (int)Logger::Severity::Info);
+		pushIntToTable("LOGGER_NORMAL", (int)Logger::Severity::Normal);
+		pushIntToTable("LOGGER_WARNING", (int)Logger::Severity::Warning);
+		pushIntToTable("LOGGER_ERROR", (int)Logger::Severity::Error);
 		pushIntToTable("BUTTON_BTA", (int)Input::Button::BT_0);
 		pushIntToTable("BUTTON_BTB", (int)Input::Button::BT_1);
 		pushIntToTable("BUTTON_BTC", (int)Input::Button::BT_2);
@@ -2268,6 +2613,27 @@ void Application::SetLuaBindings(lua_State *state)
 		lua_newtable(state);
 		pushFuncToTable("Absolute", lPathAbsolute);
 		lua_setglobal(state, "path");
+	}
+
+	//ir
+	{
+		lua_newtable(state);
+
+		lua_pushstring(state, "States");
+		lua_newtable(state);
+
+		for(const auto& el : IR::ResponseState::Values)
+			pushIntToTable(el.first, el.second);
+
+		lua_settable(state, -3);
+
+		lua_pushstring(state, "Active");
+		lua_pushboolean(state, g_gameConfig.GetString(GameConfigKeys::IRBaseURL) != "");
+		lua_settable(state, -3);
+
+		lua_setglobal(state, "IRData");
+
+		m_skinIR.PushFunctions(state);
 	}
 
 	//http
@@ -2288,26 +2654,26 @@ bool JacketLoadingJob::Run()
 		b.resize(response.text.length());
 		memcpy(b.data(), response.text.c_str(), b.size());
 		loadedImage = ImageRes::Create(b);
-		if (loadedImage.IsValid())
+		if (loadedImage)
 		{
 			if (loadedImage->GetSize().x > w || loadedImage->GetSize().y > h)
 			{
 				loadedImage->ReSize({w, h});
 			}
 		}
-		return loadedImage.IsValid();
+		return loadedImage.get() != nullptr;
 	}
 	else
 	{
 		loadedImage = ImageRes::Create(imagePath);
-		if (loadedImage.IsValid())
+		if (loadedImage)
 		{
 			if (loadedImage->GetSize().x > w || loadedImage->GetSize().y > h)
 			{
 				loadedImage->ReSize({w, h});
 			}
 		}
-		return loadedImage.IsValid();
+		return loadedImage.get() != nullptr;
 	}
 }
 void JacketLoadingJob::Finalize()
@@ -2318,4 +2684,14 @@ void JacketLoadingJob::Finalize()
 		target->texture = nvgCreateImageRGBA(g_guiState.vg, loadedImage->GetSize().x, loadedImage->GetSize().y, 0, (unsigned char *)loadedImage->GetBits());
 		target->loaded = true;
 	}
+}
+
+SharedTexture::~SharedTexture()
+{
+	nvgDeleteImage(g_guiState.vg, nvgTexture);
+}
+
+bool SharedTexture::Valid()
+{
+	return nvgTexture != 0 && texture;
 }

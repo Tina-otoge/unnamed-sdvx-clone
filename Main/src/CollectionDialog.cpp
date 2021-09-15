@@ -9,12 +9,12 @@
 class TextInputCollectionDialog
 {
 public:
-	WString input;
-	WString composition;
+	String input;
+	String composition;
 	uint32 backspaceCount;
 	bool active = false;
-	Delegate<const WString&> OnTextChanged;
-	Delegate<const WString&> OnReturn;
+	Delegate<const String&> OnTextChanged;
+	Delegate<const String&> OnReturn;
 	bool start_taking_input = false;
 
 	~TextInputCollectionDialog()
@@ -25,7 +25,7 @@ public:
 		g_gameWindow->OnKeyPressed.RemoveAll(this);
 	}
 
-	void OnTextInput(const WString& wstr)
+	void OnTextInput(const String& wstr)
 	{
 		if (!start_taking_input)
 			return;
@@ -36,9 +36,9 @@ public:
 	{
 		composition = comp.composition;
 	}
-	void OnKeyRepeat(int32 key)
+	void OnKeyRepeat(SDL_Scancode key)
 	{
-		if (key == SDLK_BACKSPACE)
+		if (key == SDL_SCANCODE_BACKSPACE)
 		{
 			if (input.empty())
 				backspaceCount++; // Send backspace
@@ -46,13 +46,19 @@ public:
 			{
 				auto it = input.end(); // Modify input string instead
 				--it;
+				while ((*it & 0b11000000) == 0b10000000)
+				{
+					input.erase(it);
+					--it;
+				}
 				input.erase(it);
 				OnTextChanged.Call(input);
 			}
 		}
 	}
-	void OnKeyPressed(int32 key)
+	void OnKeyPressed(SDL_Scancode code)
 	{
+		SDL_Keycode key = SDL_GetKeyFromScancode(code);
 		if (key == SDLK_v)
 		{
 			if (g_gameWindow->GetModifierKeys() == ModifierKeys::Ctrl)
@@ -64,7 +70,7 @@ public:
 				}
 			}
 		}
-		else if (key == SDLK_RETURN)
+		else if (code == SDL_SCANCODE_RETURN)
 		{
 			OnReturn.Call(input);
 		}
@@ -178,7 +184,7 @@ void CollectionDialog::Tick(float deltaTime)
 	m_nameEntry->Tick();
 	lua_getglobal(m_lua, "dialog");
 	lua_pushstring(m_lua, "newName");
-	lua_pushstring(m_lua, *Utility::ConvertToUTF8(m_nameEntry->input));
+	lua_pushstring(m_lua, *m_nameEntry->input);
 	lua_settable(m_lua, -3);
 	lua_setglobal(m_lua, "dialog");
 
@@ -196,7 +202,7 @@ void CollectionDialog::Render(float deltaTime)
 	lua_pushnumber(m_lua, deltaTime);
 	if (lua_pcall(m_lua, 1, 1, 0) != 0)
 	{
-		Logf("Lua error: %s", Logger::Error, lua_tostring(m_lua, -1));
+		Logf("Lua error: %s", Logger::Severity::Error, lua_tostring(m_lua, -1));
 		g_gameWindow->ShowMessageBox("Lua Error", lua_tostring(m_lua, -1), 0);
 		Close();
 		m_Finish();
@@ -211,10 +217,12 @@ void CollectionDialog::Render(float deltaTime)
 	}
 }
 
-void CollectionDialog::Open(const ChartIndex& song)
+void CollectionDialog::Open(const ChartIndex* song)
 {
+	if (song == nullptr)
+		return;
 	m_active = true;
-	m_currentId = song.folderId;
+	m_currentId = song->folderId;
 	m_nameEntry->SetActive(false);
 	m_nameEntry->Reset();
 
@@ -222,15 +230,15 @@ void CollectionDialog::Open(const ChartIndex& song)
 	lua_getglobal(m_lua, "dialog");
 
 	lua_pushstring(m_lua, "title");
-	lua_pushstring(m_lua, *song.title);
+	lua_pushstring(m_lua, *song->title);
 	lua_settable(m_lua, -3);
 
 	lua_pushstring(m_lua, "artist");
-	lua_pushstring(m_lua, *song.artist);
+	lua_pushstring(m_lua, *song->artist);
 	lua_settable(m_lua, -3);
 
 	lua_pushstring(m_lua, "jacket");
-	lua_pushstring(m_lua, *song.jacket_path);
+	lua_pushstring(m_lua, *song->jacket_path);
 	lua_settable(m_lua, -3);
 
 	m_closing = false;
@@ -272,7 +280,7 @@ void CollectionDialog::Open(const ChartIndex& song)
 	{
 		if (lua_pcall(m_lua, 0, 0, 0) != 0)
 		{
-			Logf("Lua error on open: %s", Logger::Error, lua_tostring(m_lua, -1));
+			Logf("Lua error on open: %s", Logger::Severity::Error, lua_tostring(m_lua, -1));
 			g_gameWindow->ShowMessageBox("Lua Error on open", lua_tostring(m_lua, -1), 0);
 		}
 	}
@@ -345,7 +353,7 @@ void CollectionDialog::m_AdvanceSelection(int steps)
 		lua_pushnumber(m_lua, (int32)steps);
 		if (lua_pcall(m_lua, 1, 0, 0) != 0)
 		{
-			Logf("Lua error on advance_selection: %s", Logger::Error, lua_tostring(m_lua, -1));
+			Logf("Lua error on advance_selection: %s", Logger::Severity::Error, lua_tostring(m_lua, -1));
 			g_gameWindow->ShowMessageBox("Lua Error on advance_selection", lua_tostring(m_lua, -1), 0);
 		}
 	}
@@ -363,14 +371,14 @@ void CollectionDialog::m_OnButtonPressed(Input::Button button)
 		lua_pushnumber(m_lua, (int32)button);
 		if (lua_pcall(m_lua, 1, 0, 0) != 0)
 		{
-			Logf("Lua error on button_pressed: %s", Logger::Error, lua_tostring(m_lua, -1));
+			Logf("Lua error on button_pressed: %s", Logger::Severity::Error, lua_tostring(m_lua, -1));
 			g_gameWindow->ShowMessageBox("Lua Error on button_pressed", lua_tostring(m_lua, -1), 0);
 		}
 	}
 	lua_settop(m_lua, 0);
 }
 
-void CollectionDialog::m_OnKeyPressed(int32 key)
+void CollectionDialog::m_OnKeyPressed(SDL_Scancode code)
 {
 	if (!m_active || m_closing)
 	{
@@ -379,24 +387,24 @@ void CollectionDialog::m_OnKeyPressed(int32 key)
 
 	if (m_nameEntry->active)
 	{
-		if (key == SDLK_ESCAPE)
+		if (code == SDL_SCANCODE_ESCAPE)
 			m_shouldChangeState = true;
 		return;
 	}
 
-	if (key == SDLK_DOWN)
+	if (code == SDL_SCANCODE_DOWN)
 	{
 		m_AdvanceSelection(1);
 	}
-	else if (key == SDLK_UP)
+	else if (code == SDL_SCANCODE_UP)
 	{
 		m_AdvanceSelection(-1);
 	}
 }
 
-void CollectionDialog::m_OnEntryReturn(const WString& name)
+void CollectionDialog::m_OnEntryReturn(const String& name)
 {
-	m_songdb->AddOrRemoveToCollection(Utility::ConvertToUTF8(name), m_currentId);
+	m_songdb->AddOrRemoveToCollection(name, m_currentId);
 	OnCompletion.Call();
 	Close();
 }

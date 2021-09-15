@@ -1,5 +1,5 @@
 # Root CMake file
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.12)
 #set(VCPKG_CRT_LINKAGE static)
 #set(VCPKG_LIBRARY_LINKAGE static)
 #set(VCPKG_TARGET_TRIPLET "x64-windows-static" CACHE STRING "Vcpkg target triplet (ex. x86-windows)")
@@ -13,7 +13,7 @@ elseif(WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 
-project(USC VERSION 0.4.0)
+project(USC VERSION 0.5.0)
 if(WIN32 AND ${CMAKE_VERSION} VERSION_GREATER "3.12")
     cmake_policy(SET CMP0079 NEW)
 endif()
@@ -52,16 +52,38 @@ find_package(JPEG REQUIRED)
 find_package(Vorbis REQUIRED)
 find_package(OGG REQUIRED)
 find_package(LibArchive REQUIRED)
+find_package(Iconv REQUIRED)
 
 # All projects use unicode define
 # this is mainly for windows functions either being defined to call A or W prefixed functions
 add_definitions(-DUNICODE -D_UNICODE)
+
+#https://stackoverflow.com/questions/60041896/reuse-target-compile-options-from-variable-for-multiple-targets-cmake/60047012#60047012
+add_library(cc-common INTERFACE)
+
+if(WIN32)
+    target_compile_options(cc-common INTERFACE /Zi)
+endif()
 
 OPTION(EMBEDDED "Enable embedded build" OFF)
 
 if(EMBEDDED)
 	message("Enabling embedded build")
     add_definitions(-DEMBEDDED)
+endif()
+
+OPTION(CRASHDUMP "Enable collecting crash dumps" ON)
+if(CRASHDUMP)
+    message("Enabling crash dumps")
+    add_definitions(-DCRASHDUMP)
+endif()
+
+OPTION(ASAN "Build With ASAN" OFF)
+if(ASAN)
+    target_compile_options(cc-common INTERFACE
+        -fsanitize=address
+        -fno-omit-frame-pointer
+    )
 endif()
 
 # Include macros

@@ -39,13 +39,48 @@ void Input::Init(Graphics::Window& wnd)
 	m_backComboHold = g_gameConfig.GetEnum<Enum_ButtonComboModeSettings>(GameConfigKeys::UseBackCombo) == ButtonComboModeSettings::Hold;
 	m_backComboInstant = g_gameConfig.GetEnum<Enum_ButtonComboModeSettings>(GameConfigKeys::UseBackCombo) == ButtonComboModeSettings::Instant;
 
+	switch (g_gameConfig.GetEnum<Enum_LaserAxisOption>(GameConfigKeys::InvertLaserInput)) {
+	
+	case LaserAxisOption::Left:
+		m_laserDirections[0] = -1.0f;
+		m_laserDirections[1] = 1.0f;
+		break;
+	case LaserAxisOption::Right:
+		m_laserDirections[0] = 1.0f;
+		m_laserDirections[1] = -1.0f;
+		break;
+	case LaserAxisOption::Both:
+		m_laserDirections[0] = -1.0f;
+		m_laserDirections[1] = -1.0f;
+		break;
+	default:
+		m_laserDirections[0] = 1.0f;
+		m_laserDirections[1] = 1.0f;
+		break;
+	}
+
+
 	// Init controller mapping
 	if(m_laserDevice == InputDevice::Controller || m_buttonDevice == InputDevice::Controller)
 	{
-		int32 deviceIndex = g_gameConfig.GetInt(GameConfigKeys::Controller_DeviceID);
-		if(deviceIndex >= m_window->GetNumGamepads())
+		const auto deviceId = g_gameConfig.GetBlob<16>(GameConfigKeys::Controller_DeviceID);
+		int deviceIndex = -1;
+
+		for (int32 i = 0; i < m_window->GetNumGamepads(); i++)
 		{
-			Logf("Out of range controller [%d], number of available controllers is %d", Logger::Error, deviceIndex, m_window->GetNumGamepads());
+			auto id = SDL_JoystickGetDeviceGUID(i);
+			if (memcmp(deviceId.data(), id.data, 16) == 0)
+			{
+				deviceIndex = i;
+				break;
+			}
+		}
+
+
+
+		if(deviceIndex < 0)
+		{
+			Log("Could not find bound gamepad", Logger::Severity::Warning);
 		}
 		else
 		{
@@ -68,7 +103,7 @@ void Input::Cleanup()
 	{
 		m_gamepad->OnButtonPressed.RemoveAll(this);
 		m_gamepad->OnButtonReleased.RemoveAll(this);
-		m_gamepad.Release();
+		m_gamepad.reset();
 	}
 	if(m_window)
 	{
@@ -83,7 +118,7 @@ void Input::Update(float deltaTime)
 {
 	for(auto it = m_mouseLocks.begin(); it != m_mouseLocks.end();)
 	{
-		if(it->GetRefCount() == 1)
+		if(it->use_count() == 1)
 		{
 			it = m_mouseLocks.erase(it);
 			continue;
@@ -105,7 +140,7 @@ void Input::Update(float deltaTime)
 	{
 		for(uint32 i = 0; i < 2; i++)
 		{
-			if(m_mouseAxisMapping[i] < 0 || m_mouseAxisMapping[i] > 1)
+			if(m_mouseAxisMapping[i] > 1)
 			{
 				// INVALID MAPPING
 				m_laserStates[i] = 0.0f;
@@ -173,8 +208,11 @@ void Input::Update(float deltaTime)
 		}
 	}
 
-	m_absoluteLaserStates[0] = fmodf(m_absoluteLaserStates[0] + m_laserStates[0], Math::pi * 2);
-	m_absoluteLaserStates[1] = fmodf(m_absoluteLaserStates[1] + m_laserStates[1], Math::pi * 2);
+	for (size_t i = 0; i < 2; i++)
+	{
+		m_laserStates[i] *= m_laserDirections[i];
+		m_absoluteLaserStates[i] = fmodf(m_absoluteLaserStates[i] + m_laserStates[i], Math::pi * 2);
+	}
 
 
 	//back combo checks
@@ -259,25 +297,30 @@ void Input::m_InitKeyboardMapping()
 	{
 		// Button mappings
 		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_BTS), Button::BT_S);
+
 		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_BT0), Button::BT_0);
 		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_BT1), Button::BT_1);
 		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_BT2), Button::BT_2);
 		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_BT3), Button::BT_3);
+
+		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_FX0), Button::FX_0);
+		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_FX1), Button::FX_1);
+		
 		// Alternate button mappings
+		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_BTSAlt), Button::BT_S);
+
 		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_BT0Alt), Button::BT_0);
 		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_BT1Alt), Button::BT_1);
 		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_BT2Alt), Button::BT_2);
 		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_BT3Alt), Button::BT_3);
 
-		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_FX0), Button::FX_0);
-		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_FX1), Button::FX_1);
-		// Alternate button mappings
 		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_FX0Alt), Button::FX_0);
 		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_FX1Alt), Button::FX_1);
 	}
 
 	//Always bind back button
 	m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_Back), Button::Back);
+	m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_BackAlt), Button::Back);
 
 	if(m_laserDevice == InputDevice::Keyboard)
 	{
@@ -286,6 +329,12 @@ void Input::m_InitKeyboardMapping()
 		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_Laser0Pos), Button::LS_0Pos);
 		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_Laser1Neg), Button::LS_1Neg);
 		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_Laser1Pos), Button::LS_1Pos);
+
+		// Alternate laser button mappings
+		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_Laser0NegAlt), Button::LS_0Neg);
+		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_Laser0PosAlt), Button::LS_0Pos);
+		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_Laser1NegAlt), Button::LS_1Neg);
+		m_buttonMap.Add(g_gameConfig.GetInt(GameConfigKeys::Key_Laser1PosAlt), Button::LS_1Pos);
 	}
 }
 
@@ -363,17 +412,17 @@ void Input::m_OnGamepadButtonReleased(uint8 button)
 		m_OnButtonInput(it1->second, false);
 }
 
-void Input::OnKeyPressed(int32 key)
+void Input::OnKeyPressed(SDL_Scancode code)
 {
 	// Handle button mappings
-	auto it = m_buttonMap.equal_range(key);
+	auto it = m_buttonMap.equal_range(static_cast<int32>(code));
 	for(auto it1 = it.first; it1 != it.second; it1++)
 		m_OnButtonInput(it1->second, true);
 }
-void Input::OnKeyReleased(int32 key)
+void Input::OnKeyReleased(SDL_Scancode code)
 {
 	// Handle button mappings
-	auto it = m_buttonMap.equal_range(key);
+	auto it = m_buttonMap.equal_range(static_cast<int32>(code));
 	for(auto it1 = it.first; it1 != it.second; it1++)
 		m_OnButtonInput(it1->second, false);
 }

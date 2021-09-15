@@ -10,7 +10,6 @@
 #include "Track.hpp"
 #include "Camera.hpp"
 #include "Background.hpp"
-#include "HealthGauge.hpp"
 #include "Shared/Jobs.hpp"
 #include "ScoreScreen.hpp"
 #include "Shared/Enum.hpp"
@@ -18,6 +17,7 @@
 #include "Shared/LuaBindable.hpp"
 #include "DownloadScreen.hpp"
 #include "MultiplayerScreen.hpp"
+#include "ChallengeSelect.hpp"
 
 class TitleScreen_Impl : public TitleScreen
 {
@@ -59,6 +59,12 @@ private:
 		return 0;
 	}
 
+	int lChallengeSelect(lua_State* L)
+	{
+		g_transition->TransitionTo(ChallengeSelect::Create());
+		return 0;
+	}
+
 	int lUpdate(lua_State* L)
 	{
 		g_application->RunUpdater();
@@ -84,9 +90,7 @@ private:
 		lua_pushnumber(m_lua, (int32)button);
 		if (lua_pcall(m_lua, 1, 1, 0) != 0)
 		{
-			Logf("Lua error on mouse_pressed: %s", Logger::Error, lua_tostring(m_lua, -1));
-			g_gameWindow->ShowMessageBox("Lua Error on mouse_pressed", lua_tostring(m_lua, -1), 0);
-			assert(false);
+			g_application->ScriptError("titlescreen", m_lua);
 		}
 		int ret = luaL_checkinteger(m_lua, 1);
 		lua_settop(m_lua, 0);
@@ -117,8 +121,7 @@ private:
 			lua_pushnumber(m_lua, (int32)buttonCode);
 			if (lua_pcall(m_lua, 1, 0, 0) != 0)
 			{
-				Logf("Lua error on button_pressed: %s", Logger::Error, lua_tostring(m_lua, -1));
-				g_gameWindow->ShowMessageBox("Lua Error on button_pressed", lua_tostring(m_lua, -1), 0);
+				g_application->ScriptError("titlescreen", m_lua);
 			}
 		}
 		lua_settop(m_lua, 0);
@@ -127,7 +130,12 @@ private:
 public:
 	bool Init()
 	{
-		CheckedLoad(m_lua = g_application->LoadScript("titlescreen"));
+		m_lua = g_application->LoadScript("titlescreen");
+		if (m_lua == nullptr)
+		{
+			Settings();
+			return false;
+		}
 		m_luaBinds = new LuaBindable(m_lua, "Menu");
 		m_luaBinds->AddFunction("Exit", this, &TitleScreen_Impl::lExit);
 		m_luaBinds->AddFunction("Settings", this, &TitleScreen_Impl::lSettings);
@@ -136,6 +144,7 @@ public:
 		m_luaBinds->AddFunction("Update", this, &TitleScreen_Impl::lUpdate);
 
 		m_luaBinds->AddFunction("Multiplayer", this, &TitleScreen_Impl::lMultiplayer);
+		m_luaBinds->AddFunction("Challenges", this, &TitleScreen_Impl::lChallengeSelect);
 
 		m_luaBinds->Push();
 		lua_settop(m_lua, 0);
@@ -174,9 +183,10 @@ public:
 		lua_pushnumber(m_lua, deltaTime);
 		if (lua_pcall(m_lua, 1, 0, 0) != 0)
 		{
-			Logf("Lua error: %s", Logger::Error, lua_tostring(m_lua, -1));
-			g_gameWindow->ShowMessageBox("Lua Error", lua_tostring(m_lua, -1), 0);
-			assert(false);
+			if (!g_application->ScriptError("titlescreen", m_lua)) {
+				Settings(); //Go to settings since there are no scripts there and you can change skin from there
+				g_application->RemoveTickable(this);
+			}
 		}
 	}
 	virtual void OnSuspend()

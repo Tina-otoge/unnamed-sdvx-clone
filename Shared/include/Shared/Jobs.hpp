@@ -10,6 +10,9 @@
 	Additional job flags,
 	this allows clustering IO operation onto the same thread as to not lock up the system
 */
+#ifdef None
+#undef None
+#endif
 enum class JobFlags : uint8
 {
 	None = 0,
@@ -46,7 +49,7 @@ public:
 
 	// Called when finished
 	//	called from main thread when JobSheduler::Update is called
-	Delegate<Ref<JobBase>> OnFinished;
+	Delegate<Ref<JobBase>&> OnFinished;
 
 	// Create job from lambda function
 	template<typename Lambda, typename... Args>

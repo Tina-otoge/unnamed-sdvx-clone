@@ -12,7 +12,7 @@ using namespace nlohmann;
 template<class K, class V, class dummy_compare, class A>
 using workaround_fifo_map = fifo_map<K, V, fifo_map_compare<K>, A>;
 
-SkinConfig::SkinConfig(String skin)
+SkinConfig::SkinConfig(const String& skin)
 {
 	m_skin = skin;
 
@@ -40,7 +40,9 @@ SkinConfig::SkinConfig(String skin)
 		};
 		
 
-		Buffer buf(defFile.GetSize());
+		Buffer buf;
+		buf.resize(defFile.GetSize());
+		
 		defFile.Read(buf.data(), buf.size());
 		String jsonData((char*)buf.data(), buf.size());
 		ordered_json definitions;
@@ -107,7 +109,7 @@ SkinConfig::SkinConfig(String skin)
 				newsetting.selectionSetting.def = strdup(*def);
 				newsetting.selectionSetting.numOptions = values.at("values").size();
 				newsetting.selectionSetting.options = new String[newsetting.selectionSetting.numOptions];
-				for (size_t i = 0; i < newsetting.selectionSetting.numOptions; i++)
+				for (int i = 0; i < newsetting.selectionSetting.numOptions; i++)
 				{
 					values.at("values").at(i).get_to(newsetting.selectionSetting.options[i]);
 				}
@@ -140,6 +142,7 @@ SkinConfig::SkinConfig(String skin)
 				break;
 
 			case SkinSetting::Type::Color:
+			{
 				values.at("default").get_to(def);
 				ColorConfigEntry ce;
 				ce.FromString(def);
@@ -152,6 +155,9 @@ SkinConfig::SkinConfig(String skin)
 				{
 					newsetting.colorSetting.hsv = false;
 				}
+			}
+				break;
+			default:
 				break;
 			}
 			m_settings.Add(newsetting);
@@ -204,7 +210,7 @@ SkinConfig::~SkinConfig()
 	}
 }
 
-bool SkinConfig::IsSet(String key) const
+bool SkinConfig::IsSet(const String& key) const
 {
 	return (m_keys.Contains(key) && m_entries.Contains(m_keys.at(key)));
 }
@@ -241,34 +247,36 @@ void SkinConfig::InitDefaults()
 		case SkinSetting::Type::Color:
 			Set(setting.key, *setting.colorSetting.def);
 			break;
+			default:
+			break;
 		}
 
 	}
 }
 
-int32 SkinConfig::GetInt(String key) const
+int32 SkinConfig::GetInt(const String& key) const
 {
 	return GetEnsure<IntConfigEntry>(key)->data;
 }
-float SkinConfig::GetFloat(String key) const
+float SkinConfig::GetFloat(const String& key) const
 {
 	return GetEnsure<FloatConfigEntry>(key)->data;
 }
-String SkinConfig::GetString(String key) const
+const String& SkinConfig::GetString(const String& key) const
 {
 	return GetEnsure<StringConfigEntry>(key)->data;
 }
-bool SkinConfig::GetBool(String key) const
+bool SkinConfig::GetBool(const String& key) const
 {
 	return GetEnsure<BoolConfigEntry>(key)->data;
 }
 
-Color SkinConfig::GetColor(String key) const
+Color SkinConfig::GetColor(const String& key) const
 {
 	return GetEnsure<ColorConfigEntry>(key)->data;
 }
 
-IConfigEntry* SkinConfig::GetEntry(String key) const
+IConfigEntry* SkinConfig::GetEntry(const String& key) const
 {
 	if(!m_keys.Contains(key))
 		return nullptr;
@@ -277,7 +285,7 @@ IConfigEntry* SkinConfig::GetEntry(String key) const
 }
 
 
-void SkinConfig::Set(String key, const int32& value)
+void SkinConfig::Set(const String& key, const int32& value)
 {
 	int32& dst = SetEnsure<IntConfigEntry>(key)->data;
 	if (dst != value)
@@ -286,7 +294,7 @@ void SkinConfig::Set(String key, const int32& value)
 		m_dirty = true;
 	}
 }
-void SkinConfig::Set(String key, const float& value)
+void SkinConfig::Set(const String& key, const float& value)
 {
 	float& dst = SetEnsure<FloatConfigEntry>(key)->data;
 	if (dst != value)
@@ -295,7 +303,7 @@ void SkinConfig::Set(String key, const float& value)
 		m_dirty = true;
 	}
 }
-void SkinConfig::Set(String key, const bool& value)
+void SkinConfig::Set(const String& key, const bool& value)
 {
 	bool& dst = SetEnsure<BoolConfigEntry>(key)->data;
 	if (dst != value)
@@ -304,7 +312,7 @@ void SkinConfig::Set(String key, const bool& value)
 		m_dirty = true;
 	}
 }
-void SkinConfig::Set(String key, const Color & value)
+void SkinConfig::Set(const String& key, const Color& value)
 {
 	Color& dst = SetEnsure<ColorConfigEntry>(key)->data;
 	if (dst != value)
@@ -313,7 +321,7 @@ void SkinConfig::Set(String key, const Color & value)
 		m_dirty = true;
 	}
 }
-void SkinConfig::Set(String key, const String& value)
+void SkinConfig::Set(const String& key, const String& value)
 {
 	String& dst = SetEnsure<StringConfigEntry>(key)->data;
 	if (dst != value)

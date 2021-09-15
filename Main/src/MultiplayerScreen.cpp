@@ -1,32 +1,30 @@
 #include "stdafx.h"
 #include "MultiplayerScreen.hpp"
 #include "Application.hpp"
-#include "lua.hpp"
-#include "archive.h"
-#include "archive_entry.h"
 #include "SkinHttp.hpp"
 #include "GameConfig.hpp"
 #include "cpr/util.h"
 #include "SongSelect.hpp"
 #include "SettingsScreen.hpp"
 #include "SkinConfig.hpp"
+#include "ChatOverlay.hpp"
+#include <Audio/Audio.hpp>
 
-#include <ctime>
-#include <string>
 #include <TransitionScreen.hpp>
 #include <Game.hpp>
+#include "Gauge.hpp"
 
-#define MULTIPLAYER_VERSION "v0.17"
+#define MULTIPLAYER_VERSION "v0.19"
 
 // XXX probably should be moved with the songselect one to its own class file?
 class TextInputMultiplayer
 {
 public:
-	WString input;
-	WString composition;
+	String input;
+	String composition;
 	uint32 backspaceCount;
 	bool active = false;
-	Delegate<const WString&> OnTextChanged;
+	Delegate<const String&> OnTextChanged;
 	bool start_taking_input = false;
 
 	~TextInputMultiplayer()
@@ -37,7 +35,7 @@ public:
 		g_gameWindow->OnKeyPressed.RemoveAll(this);
 	}
 
-	void OnTextInput(const WString& wstr)
+	void OnTextInput(const String& wstr)
 	{
 		if (!start_taking_input)
 			return;
@@ -48,9 +46,9 @@ public:
 	{
 		composition = comp.composition;
 	}
-	void OnKeyRepeat(int32 key)
+	void OnKeyRepeat(SDL_Scancode key)
 	{
-		if (key == SDLK_BACKSPACE)
+		if (key == SDL_SCANCODE_BACKSPACE)
 		{
 			if (input.empty())
 				backspaceCount++; // Send backspace
@@ -58,13 +56,19 @@ public:
 			{
 				auto it = input.end(); // Modify input string instead
 				--it;
+				while ((*it & 0b11000000) == 0b10000000)
+				{
+					input.erase(it);
+					--it;
+				}
 				input.erase(it);
 				OnTextChanged.Call(input);
 			}
 		}
 	}
-	void OnKeyPressed(int32 key)
+	void OnKeyPressed(SDL_Scancode code)
 	{
+		SDL_Keycode key = SDL_GetKeyFromScancode(code);
 		if (key == SDLK_v)
 		{
 			if (g_gameWindow->GetModifierKeys() == ModifierKeys::Ctrl)
@@ -92,7 +96,8 @@ public:
 		}
 		else
 		{
-			SDL_StopTextInput();
+			// XXX This seems to break nuklear so I commented it out
+			//SDL_StopTextInput();
 			g_gameWindow->OnTextInput.RemoveAll(this);
 			g_gameWindow->OnTextComposition.RemoveAll(this);
 			g_gameWindow->OnKeyRepeat.RemoveAll(this);
@@ -114,10 +119,6 @@ public:
 	}
 };
 
-MultiplayerScreen::MultiplayerScreen()
-{
-}
-
 MultiplayerScreen::~MultiplayerScreen()
 {
 	g_input.OnButtonPressed.RemoveAll(this);
@@ -130,13 +131,17 @@ MultiplayerScreen::~MultiplayerScreen()
 		g_application->DisposeLua(m_lua);
 		m_tcp.ClearState(m_lua);
 	}
+
+	delete m_chatOverlay;
+	delete m_bindable;
 }
 
 bool MultiplayerScreen::Init()
 {
+	if (!m_settDiag.Init())
+		return false;
 
-
-    return true;
+	return true;
 }
 
 void MultiplayerScreen::JoinRoomWithToken(String token)
@@ -178,6 +183,7 @@ void MultiplayerScreen::m_handleSocketClose()
 	// Don't exit if we are in game or selection
 	if (m_suspended)
 		return;
+
 	g_application->RemoveTickable(this);
 }
 
@@ -194,8 +200,9 @@ void MultiplayerScreen::m_render(float deltaTime)
 
 	if (lua_pcall(m_lua, 1, 0, 0) != 0)
 	{
-		Logf("Lua error: %s", Logger::Error, lua_tostring(m_lua, -1));
+		Logf("Lua error: %s", Logger::Severity::Error, lua_tostring(m_lua, -1));
 		g_gameWindow->ShowMessageBox("Lua Error in render", lua_tostring(m_lua, -1), 0);
+
 		g_application->RemoveTickable(this);
 	}
 }
@@ -232,12 +239,20 @@ bool MultiplayerScreen::m_handleJoinRoom(nlohmann::json& packet)
 	if (m_textInput->active)
 		m_textInput->SetActive(false);
 
+
 	m_screenState = MultiplayerScreenState::IN_ROOM;
+	m_chatOverlay->EnableOpeningChat();
+
 	lua_pushstring(m_lua, "inRoom");
 	lua_setglobal(m_lua, "screenState");
 	packet["room"]["id"].get_to(m_roomId);
 	packet["room"]["join_token"].get_to(m_joinToken);
 	g_application->DiscordPresenceMulti(m_joinToken, 1, 8, "test");
+
+	String roomname;
+	packet["room"]["name"].get_to(roomname);
+	m_chatOverlay->AddMessage("You joined "+roomname, 207, 178, 41);
+
 	return true;
 }
 
@@ -280,6 +295,7 @@ bool MultiplayerScreen::m_handleRoomUpdate(nlohmann::json& packet)
 	m_joinToken = packet.value("join_token", "");
 	g_application->DiscordPresenceMulti(m_joinToken, userCount, 8, "test");
 	m_handleSongChange(packet);
+
 	return true;
 }
 bool MultiplayerScreen::m_handleSongChange(nlohmann::json& packet)
@@ -303,6 +319,7 @@ bool MultiplayerScreen::m_handleSongChange(nlohmann::json& packet)
 	// Clear jacket variable to force image reload
 	lua_pushinteger(m_lua, 0);
 	lua_setglobal(m_lua, "jacket");
+
 
 	// Grab new song
 	uint32 diff_ind = packet["diff"];
@@ -356,25 +373,22 @@ bool MultiplayerScreen::m_handleStartPacket(nlohmann::json& packet)
 	// Reset score time before playing
 	m_lastScoreSent = 0;
 
-	Logf("[Multiplayer] Starting game: diff_id=%d mapId=%d path=%s", Logger::Info, chart->id, chart->folderId, chart->path.c_str());
+	Logf("[Multiplayer] Starting game: diff_id=%d mapId=%d path=%s", Logger::Severity::Info, chart->id, chart->folderId, chart->path.c_str());
 
 	// The server tells us if we are playing excessive or not
 	bool is_hard = packet["hard"];
 	bool is_mirror = packet.value("mirror", false);
 
-	GameFlags flags;
+	PlaybackOptions opts;
 	if (is_hard)
-		flags = GameFlags::Hard;
-	else
-		flags = GameFlags::None;
-	if (is_mirror)
-		flags = flags | GameFlags::Mirror;
+		opts.gaugeType = GaugeType::Hard;
+	opts.mirror = is_mirror;
 
 	// Create the game using the Create that takes the MultiplayerScreen class
-	Game* game = Game::Create(this, *(chart), flags);
+	Game* game = Game::Create(this, chart, opts);
 	if (!game)
 	{
-		Log("Failed to start game", Logger::Error);
+		Log("Failed to start game", Logger::Severity::Error);
 		return 0;
 	}
 
@@ -400,12 +414,12 @@ ChartIndex* MultiplayerScreen::m_getChartByHash(const String& hash, const String
 	if (hash.length() == 0)
 		return m_getChartByShortPath(path, diffIndex, level, true);
 	
-	Logf("[Multiplayer] looking up song hash '%s' level %u", Logger::Info, *hash, level);
+	Logf("[Multiplayer] looking up song hash '%s' level %u", Logger::Severity::Info, *hash, level);
 	for (auto folder : m_mapDatabase->FindFoldersByHash(hash))
 	{
 		ChartIndex* newChart = NULL;
 
-		for (int ind = 0; ind < folder.second->charts.size(); ind++)
+		for (size_t ind = 0; ind < folder.second->charts.size(); ind++)
 		{
 			ChartIndex* chart = folder.second->charts[ind];
 			if (chart->level == level)
@@ -426,11 +440,11 @@ ChartIndex* MultiplayerScreen::m_getChartByHash(const String& hash, const String
 
 		if (newChart != NULL)
 		{
-			Logf("[Multiplayer] Found: diff_id=%d mapid=%d index=%u path=%s", Logger::Info, newChart->id, newChart->folderId, *diffIndex, newChart->path.c_str());
+			Logf("[Multiplayer] Found: diff_id=%d mapid=%d index=%u path=%s", Logger::Severity::Info, newChart->id, newChart->folderId, *diffIndex, newChart->path.c_str());
 			return newChart;
 		}
 	}
-	Log("[Multiplayer] Could not find song by hash, falling back to foldername", Logger::Warning);
+	Log("[Multiplayer] Could not find song by hash, falling back to foldername", Logger::Severity::Warning);
 	return m_getChartByShortPath(path, diffIndex, level, true);
 }
 
@@ -439,13 +453,13 @@ ChartIndex* MultiplayerScreen::m_getChartByHash(const String& hash, const String
 // diffIndex can be used as a hint to which song to pick
 ChartIndex* MultiplayerScreen::m_getChartByShortPath(const String& path, uint32* diffIndex, int32 level, bool useHint)
 {
-	Logf("[Multiplayer] looking up song '%s' level %u difficulty index hint %u", Logger::Info, path.c_str(), level, *diffIndex);
+	Logf("[Multiplayer] looking up song '%s' level %u difficulty index hint %u", Logger::Severity::Info, path.c_str(), level, *diffIndex);
 
 	for (auto folder : m_mapDatabase->FindFoldersByPath(path))
 	{
 		ChartIndex* newChart = NULL;
 
-		for (int ind = 0; ind < folder.second->charts.size(); ind++)
+		for (size_t ind = 0; ind < folder.second->charts.size(); ind++)
 		{
 			ChartIndex* chart = folder.second->charts[ind];
 
@@ -473,7 +487,7 @@ ChartIndex* MultiplayerScreen::m_getChartByShortPath(const String& path, uint32*
 
 		if (newChart != NULL)
 		{
-			Logf("[Multiplayer] Found: diff_id=%d mapid=%d index=%u path=%s", Logger::Info, newChart->id, newChart->folderId, *diffIndex, newChart->path.c_str());
+			Logf("[Multiplayer] Found: diff_id=%d mapid=%d index=%u path=%s", Logger::Severity::Info, newChart->id, newChart->folderId, *diffIndex, newChart->path.c_str());
 			return newChart;
 		}
 	}
@@ -485,7 +499,7 @@ ChartIndex* MultiplayerScreen::m_getChartByShortPath(const String& path, uint32*
 		return m_getChartByShortPath(path, diffIndex, level, false);
 	}
 
-	Log("[Multiplayer] Could not find song", Logger::Warning);
+	Log("[Multiplayer] Could not find song", Logger::Severity::Warning);
 	return nullptr;
 }
 
@@ -510,6 +524,7 @@ void MultiplayerScreen::SetSelectedMap(FolderIndex* folder, ChartIndex* chart)
 		m_hasSelectedMap = false;
 		return;
 	}
+	
 
 	m_selfPicked = true;
 	m_updateSelectedMap(newChart->folderId, diff_index, true);
@@ -526,7 +541,7 @@ void MultiplayerScreen::m_changeSelectedRoom(int offset)
 		lua_pushinteger(m_lua, offset);
 		if (lua_pcall(m_lua, 1, 0, 0) != 0)
 		{
-			Logf("Lua error on set_diff: %s", Logger::Error, lua_tostring(m_lua, -1));
+			Logf("Lua error on set_diff: %s", Logger::Severity::Error, lua_tostring(m_lua, -1));
 			g_gameWindow->ShowMessageBox("Lua Error on set_diff", lua_tostring(m_lua, -1), 0);
 			assert(false);
 		}
@@ -540,7 +555,7 @@ void MultiplayerScreen::m_changeDifficulty(int offset)
 	FolderIndex* folder = m_mapDatabase->GetFolder(this->m_selectedMapId);
 	int oldDiff = this->m_selectedDiffIndex;
 	int newInd = this->m_selectedDiffIndex + offset;
-	if (newInd < 0 || newInd >= folder->charts.size())
+	if (newInd < 0 || newInd >= (int)folder->charts.size())
 	{
 		return;
 	}
@@ -554,7 +569,7 @@ void MultiplayerScreen::m_changeDifficulty(int offset)
 		lua_pushinteger(m_lua, newInd + 1);
 		if (lua_pcall(m_lua, 2, 0, 0) != 0)
 		{
-			Logf("Lua error on set_diff: %s", Logger::Error, lua_tostring(m_lua, -1));
+			Logf("Lua error on set_diff: %s", Logger::Severity::Error, lua_tostring(m_lua, -1));
 			g_gameWindow->ShowMessageBox("Lua Error on set_diff", lua_tostring(m_lua, -1), 0);
 			assert(false);
 		}
@@ -569,9 +584,9 @@ void  MultiplayerScreen::GetMapBPMForSpeed(String path, struct MultiplayerBPMInf
 	path = Path::Normalize(path);
 	if (!Path::FileExists(path))
 	{
-		Logf("Couldn't find map at %s", Logger::Error, path);
+		Logf("Couldn't find map at %s", Logger::Severity::Error, path);
 
-		info = { 0 };
+		info = { 0, 0, 0, 0 };
 		return;
 	}
 
@@ -580,16 +595,16 @@ void  MultiplayerScreen::GetMapBPMForSpeed(String path, struct MultiplayerBPMInf
 	File mapFile;
 	if (!mapFile.OpenRead(path))
 	{
-		Logf("Could not read path for beatmap: %s", Logger::Error, path);
+		Logf("Could not read path for beatmap: %s", Logger::Severity::Error, path);
 		delete newMap;
-		info = { 0 };
+		info = { 0, 0, 0, 0 };
 		return;
 	}
 	FileReader reader(mapFile);
 	if (!newMap->Load(reader))
 	{
 		delete newMap;
-		info = { 0 };
+		info = { 0, 0, 0, 0 };
 		return;
 	}
 
@@ -663,6 +678,17 @@ void  MultiplayerScreen::GetMapBPMForSpeed(String path, struct MultiplayerBPMInf
 	}
 
 	delete newMap;
+}
+
+ChartIndex* MultiplayerScreen::GetCurrentSelectedChart() const
+{
+	if (!m_hasSelectedMap)
+		return nullptr;
+
+	FolderIndex* folder = m_mapDatabase->GetFolder(this->m_selectedMapId);
+	ChartIndex* chart = folder->charts[this->m_selectedDiffIndex];
+
+	return chart;
 }
 
 void MultiplayerScreen::m_updateSelectedMap(int32 mapid, int32 diff_ind, bool isNew)
@@ -754,6 +780,7 @@ void MultiplayerScreen::m_updateSelectedMap(int32 mapid, int32 diff_ind, bool is
 	lua_setglobal(m_lua, "selected_song");
 
 	m_hasSelectedMap = true;
+	m_updatePreview(chart, true);
 
 	// If we selected this song ourselves, we have to tell the server about it
 	if (isNew)
@@ -785,7 +812,7 @@ void MultiplayerScreen::m_clearLuaMap()
 
 void MultiplayerScreen::MousePressed(MouseButton button)
 {
-	if (IsSuspended())
+	if (IsSuspended() || m_chatOverlay->IsOpen())
 		return;
 
 	lua_getglobal(m_lua, "mouse_pressed");
@@ -794,12 +821,62 @@ void MultiplayerScreen::MousePressed(MouseButton button)
 		lua_pushnumber(m_lua, (int32)button);
 		if (lua_pcall(m_lua, 1, 1, 0) != 0)
 		{
-			Logf("Lua error on mouse_pressed: %s", Logger::Error, lua_tostring(m_lua, -1));
+			Logf("Lua error on mouse_pressed: %s", Logger::Severity::Error, lua_tostring(m_lua, -1));
 			g_gameWindow->ShowMessageBox("Lua Error on mouse_pressed", lua_tostring(m_lua, -1), 0);
 			assert(false);
 		}
 	}
 	lua_settop(m_lua, 0);
+}
+
+bool MultiplayerScreen::m_returnToMainList()
+{
+	if (m_screenState == MultiplayerScreenState::ROOM_LIST)
+		return false;
+
+	// Exiting from name setup
+	if (m_userName == "")
+	{
+		m_suspended = true;
+		g_application->RemoveTickable(this);
+		return true;
+	}
+
+	if (m_screenState == MultiplayerScreenState::IN_ROOM)
+	{
+		nlohmann::json packet;
+		packet["topic"] = "room.leave";
+		m_tcp.SendJSON(packet);
+	}
+	else
+	{
+		nlohmann::json packet;
+		packet["topic"] = "server.rooms";
+		m_tcp.SendJSON(packet);
+	}
+
+	if (m_textInput->active)
+		m_textInput->SetActive(false);
+
+	if (m_screenState == MultiplayerScreenState::IN_ROOM) {
+		m_chatOverlay->AddMessage("You left the lobby", 207, 178, 41);
+	}
+
+	m_chatOverlay->EnableOpeningChat();
+
+	m_screenState = MultiplayerScreenState::ROOM_LIST;
+	m_stopPreview();
+	lua_pushstring(m_lua, "roomList");
+	lua_setglobal(m_lua, "screenState");
+	g_application->DiscordPresenceMulti("", 0, 0, "");
+	m_roomId = "";
+	m_hasSelectedMap = false;
+	m_selectedMapId = 0;
+	m_selectedDiffIndex = 0;
+	m_selectedMapHash = "";
+	m_selectedMapShortPath = "";
+	m_clearLuaMap();
+	return true;
 }
 
 void MultiplayerScreen::Tick(float deltaTime)
@@ -817,15 +894,29 @@ void MultiplayerScreen::Tick(float deltaTime)
 	m_textInput->Tick();
 
 	lua_newtable(m_lua);
-	m_PushStringToTable("text", Utility::ConvertToUTF8(m_textInput->input).c_str());
+	m_PushStringToTable("text", m_textInput->input.c_str());
 	lua_setglobal(m_lua, "textInput");
+
 
 	if (IsSuspended())
 		return;
 
+	for (size_t i = 0; i < (size_t)Input::Button::Length; i++)
+	{
+		m_timeSinceButtonPressed[(Input::Button)i] += deltaTime;
+		m_timeSinceButtonReleased[(Input::Button)i] += deltaTime;
+	}
+
+	m_settDiag.Tick(deltaTime);
+
+	m_chatOverlay->Tick(deltaTime);
+	m_previewPlayer.Update(deltaTime);
+
 	// Lock mouse to screen when active
 	if (m_screenState == MultiplayerScreenState::ROOM_LIST && 
-		g_gameConfig.GetEnum<Enum_InputDevice>(GameConfigKeys::LaserInputDevice) == InputDevice::Mouse && g_gameWindow->IsActive())
+		g_gameConfig.GetEnum<Enum_InputDevice>(GameConfigKeys::LaserInputDevice) == InputDevice::Mouse &&
+        g_gameWindow->IsActive() &&
+        !m_chatOverlay->IsOpen())
 	{
 		if (!m_lockMouse)
 			m_lockMouse = g_input.LockMouse();
@@ -833,12 +924,12 @@ void MultiplayerScreen::Tick(float deltaTime)
 	else
 	{
 		if (m_lockMouse)
-			m_lockMouse.Release();
+			m_lockMouse.reset();
 		g_gameWindow->SetCursorVisible(true);
 	}
 
 	// Change difficulty
-	if (m_hasSelectedMap)
+	if (m_hasSelectedMap && !m_chatOverlay->IsOpen())
 	{
 		if (g_input.GetButton(Input::Button::BT_0)) {
 			for (int i = 0; i < 2; i++) {
@@ -916,30 +1007,42 @@ void MultiplayerScreen::m_addFinalStat(nlohmann::json& data)
 		});
 }
 
-void MultiplayerScreen::SendFinalScore(class Game* game, int clearState)
+void MultiplayerScreen::SendFinalScore(class Game* game, ClearMark clearState)
 {
 	Scoring& scoring = game->GetScoring();
 
-	clearState = HasFailed() ? 1 : clearState;
+	clearState = HasFailed() ? ClearMark::Played : clearState;
 
-	uint32 flags = (uint32)game->GetFlags();
+	PlaybackOptions opts = game->GetPlaybackOptions();
+	Gauge* gauge = scoring.GetTopGauge();
 
 	nlohmann::json packet;
 	packet["topic"] = "room.score.final";
 	packet["score"] = scoring.CalculateCurrentScore();
 	packet["combo"] = scoring.maxComboCounter;
-	packet["clear"] = clearState;
-	packet["gauge"] = scoring.currentGauge;
+	packet["clear"] = static_cast<int>(clearState);
+	packet["gauge"] = gauge->GetValue();
 	packet["early"] = scoring.timedHits[0];
 	packet["late"] = scoring.timedHits[1];
 	packet["miss"] = scoring.categorizedHits[0];
 	packet["near"] = scoring.categorizedHits[1];
 	packet["crit"] = scoring.categorizedHits[2];
-	packet["flags"] = flags;
+
+	packet["gauge_type"] = (uint32)gauge->GetType();
+	packet["gauge_option"] = gauge->GetOpts();
+	packet["mirror"] = opts.mirror;
+	packet["random"] = opts.random;
+	packet["auto_flags"] = (uint32)opts.autoFlags;
+
+	//flags for backwards compatibility
+	opts.gaugeType = gauge->GetType();
+	opts.gaugeOption = gauge->GetOpts();
+	packet["flags"] = PlaybackOptions::ToLegacyFlags(opts);
+
 	packet["mean_delta"] = scoring.GetMeanHitDelta();
 	packet["median_delta"] = scoring.GetMedianHitDelta();
 
-	packet["graph"] = *(std::array<float, 256>*)game->GetGaugeSamples();
+	packet["graph"] = game->GetGaugeSamples();
 
 	m_tcp.SendJSON(packet);
 
@@ -954,13 +1057,17 @@ void MultiplayerScreen::SendFinalScore(class Game* game, int clearState)
 
 void MultiplayerScreen::Render(float deltaTime)
 {
-	if (!IsSuspended())
+	if (!IsSuspended()) {
 		m_render(deltaTime);
+		m_chatOverlay->Render(deltaTime);
+		m_settDiag.Render(deltaTime);
+	}
 }
 
 void MultiplayerScreen::ForceRender(float deltaTime)
 {
 	m_render(deltaTime);
+	m_chatOverlay->Render(deltaTime);
 }
 
 void MultiplayerScreen::OnSearchStatusUpdated(String status)
@@ -970,77 +1077,63 @@ void MultiplayerScreen::OnSearchStatusUpdated(String status)
 	m_statusLock.unlock();
 }
 
-void MultiplayerScreen::OnKeyPressed(int32 key)
+void MultiplayerScreen::OnKeyPressed(SDL_Scancode code)
 {
-	if (IsSuspended())
+	if (IsSuspended() || m_settDiag.IsActive())
+		return;
+
+	if (m_chatOverlay->OnKeyPressedConsume(code))
 		return;
 
 	lua_getglobal(m_lua, "key_pressed");
 	if (lua_isfunction(m_lua, -1))
 	{
-		lua_pushnumber(m_lua, key);
+		lua_pushnumber(m_lua, static_cast<lua_Number>(SDL_GetKeyFromScancode(code)));
 		if (lua_pcall(m_lua, 1, 0, 0) != 0)
 		{
-			Logf("Lua error on key_pressed: %s", Logger::Error, lua_tostring(m_lua, -1));
+			Logf("Lua error on key_pressed: %s", Logger::Severity::Error, lua_tostring(m_lua, -1));
 			g_gameWindow->ShowMessageBox("Lua Error on key_pressed", lua_tostring(m_lua, -1), 0);
 		}
 	}
 	lua_settop(m_lua, 0);
 
-	if (key == SDLK_LEFT && m_hasSelectedMap)
+	if (code == SDL_SCANCODE_LEFT && m_hasSelectedMap)
 	{
 		m_changeDifficulty(-1);
 	}
-	else if (key == SDLK_RIGHT && m_hasSelectedMap)
+	else if (code == SDL_SCANCODE_RIGHT && m_hasSelectedMap)
 	{
 		m_changeDifficulty(1);
 	}
-	else if (key == SDLK_UP && m_screenState == MultiplayerScreenState::ROOM_LIST)
+	else if (code == SDL_SCANCODE_UP && m_screenState == MultiplayerScreenState::ROOM_LIST)
 	{
 		m_changeSelectedRoom(-1);
 	}
-	else if (key == SDLK_DOWN && m_screenState == MultiplayerScreenState::ROOM_LIST)
+	else if (code == SDL_SCANCODE_DOWN && m_screenState == MultiplayerScreenState::ROOM_LIST)
 	{
 		m_changeSelectedRoom(1);
 	}
-	else if (key == SDLK_ESCAPE)
+	else if (code == SDL_SCANCODE_ESCAPE)
 	{
-		if (m_screenState != MultiplayerScreenState::ROOM_LIST)
+		int backScancode = g_gameConfig.GetInt(GameConfigKeys::Key_Back);
+
+		if (g_gameConfig.GetEnum<Enum_InputDevice>(GameConfigKeys::ButtonInputDevice) != InputDevice::Keyboard
+			|| backScancode != SDL_SCANCODE_ESCAPE)
 		{
-
-			// Exiting from name setup
-			if (m_userName == "")
+			switch (m_screenState)
 			{
-				m_suspended = true;
-				g_application->RemoveTickable(this);
-				return;
+				// Escape works for text editing
+			case MultiplayerScreenState::JOIN_PASSWORD:
+			case MultiplayerScreenState::NEW_ROOM_NAME:
+			case MultiplayerScreenState::NEW_ROOM_PASSWORD:
+			case MultiplayerScreenState::SET_USERNAME:
+				m_returnToMainList();
+			default:
+				break;
 			}
-
-			if (m_screenState == MultiplayerScreenState::IN_ROOM)
-			{
-				nlohmann::json packet;
-				packet["topic"] = "room.leave";
-				m_tcp.SendJSON(packet);
-			}
-			else
-			{
-				nlohmann::json packet;
-				packet["topic"] = "server.rooms";
-				m_tcp.SendJSON(packet);
-			}
-
-			if (m_textInput->active)
-				m_textInput->SetActive(false);
-
-			m_screenState = MultiplayerScreenState::ROOM_LIST;
-			lua_pushstring(m_lua, "roomList");
-			lua_setglobal(m_lua, "screenState");
-			g_application->DiscordPresenceMulti("", 0, 0, "");
-			m_roomId = "";
-			m_hasSelectedMap = false;
 		}
 	}
-	else if (key == SDLK_RETURN)
+	else if (code == SDL_SCANCODE_RETURN)
 	{
 		if (m_screenState == MultiplayerScreenState::JOIN_PASSWORD) 
 		{
@@ -1060,18 +1153,18 @@ void MultiplayerScreen::OnKeyPressed(int32 key)
 
 
 
-void MultiplayerScreen::OnKeyReleased(int32 key)
+void MultiplayerScreen::OnKeyReleased(SDL_Scancode code)
 {
-	if (IsSuspended())
+	if (IsSuspended() || m_chatOverlay->IsOpen() || m_settDiag.IsActive())
 		return;
 
 	lua_getglobal(m_lua, "key_released");
 	if (lua_isfunction(m_lua, -1))
 	{
-		lua_pushnumber(m_lua, key);
+		lua_pushnumber(m_lua, static_cast<lua_Number>(SDL_GetKeyFromScancode(code)));
 		if (lua_pcall(m_lua, 1, 0, 0) != 0)
 		{
-			Logf("Lua error on key_released: %s", Logger::Error, lua_tostring(m_lua, -1));
+			Logf("Lua error on key_released: %s", Logger::Severity::Error, lua_tostring(m_lua, -1));
 			g_gameWindow->ShowMessageBox("Lua Error on key_released", lua_tostring(m_lua, -1), 0);
 		}
 	}
@@ -1080,11 +1173,64 @@ void MultiplayerScreen::OnKeyReleased(int32 key)
 
 void MultiplayerScreen::m_OnButtonPressed(Input::Button buttonCode)
 {
-	if (IsSuspended())
+	if (IsSuspended() || m_settDiag.IsActive())
 		return;
 
-	if (g_gameConfig.GetEnum<Enum_InputDevice>(GameConfigKeys::ButtonInputDevice) == InputDevice::Keyboard && m_textInput->active)
-		return;
+	if (g_gameConfig.GetEnum<Enum_InputDevice>(GameConfigKeys::ButtonInputDevice) == InputDevice::Keyboard)
+	{
+		if (m_chatOverlay->IsOpen())
+			return;
+
+		// Allow Button Back while text editing
+		if (m_textInput->active && buttonCode != Input::Button::Back)
+			return;
+	}
+
+	m_timeSinceButtonPressed[buttonCode] = 0;
+
+	switch (buttonCode)
+	{
+	case Input::Button::FX_1:
+		if (g_input.GetButton(Input::Button::FX_0))
+		{
+			m_buttonPressed[Input::Button::FX_0] = false;
+			m_settDiag.Open();
+			return;
+		}
+		break;
+	case Input::Button::FX_0:
+		if (g_input.GetButton(Input::Button::FX_1))
+		{
+			m_buttonPressed[Input::Button::FX_1] = false;
+			m_settDiag.Open();
+			return;
+		}
+		break;
+	case Input::Button::Back:
+		switch (m_screenState)
+		{
+		case MultiplayerScreenState::JOIN_PASSWORD:
+		case MultiplayerScreenState::NEW_ROOM_NAME:
+		case MultiplayerScreenState::NEW_ROOM_PASSWORD:
+		case MultiplayerScreenState::SET_USERNAME:
+			if (g_gameConfig.GetEnum<Enum_InputDevice>(GameConfigKeys::ButtonInputDevice) == InputDevice::Keyboard)
+			{
+				// In this case we want them to hit escape so we don't exit on text inputs
+				int backScancode = g_gameConfig.GetInt(GameConfigKeys::Key_Back);
+				if (backScancode != SDL_SCANCODE_ESCAPE)
+					break;
+			}
+			// Otherwise fall though
+            [[fallthrough]];
+		default:
+			if (m_returnToMainList())
+				return;
+			break;
+		}
+		break;
+	default:
+		break;
+	}
 
 	lua_getglobal(m_lua, "button_pressed");
 	if (lua_isfunction(m_lua, -1))
@@ -1092,20 +1238,29 @@ void MultiplayerScreen::m_OnButtonPressed(Input::Button buttonCode)
 		lua_pushnumber(m_lua, (int32)buttonCode);
 		if (lua_pcall(m_lua, 1, 0, 0) != 0)
 		{
-			Logf("Lua error on button_pressed: %s", Logger::Error, lua_tostring(m_lua, -1));
+			Logf("Lua error on button_pressed: %s", Logger::Severity::Error, lua_tostring(m_lua, -1));
 			g_gameWindow->ShowMessageBox("Lua Error on button_pressed", lua_tostring(m_lua, -1), 0);
 		}
 	}
 	lua_settop(m_lua, 0);
+
+	m_buttonPressed[buttonCode] = true;
 }
 
 void MultiplayerScreen::m_OnButtonReleased(Input::Button buttonCode)
 {
-	if (IsSuspended())
+	if (IsSuspended() || m_chatOverlay->IsOpen() || m_settDiag.IsActive())
 		return;
 
 	if (g_gameConfig.GetEnum<Enum_InputDevice>(GameConfigKeys::ButtonInputDevice) == InputDevice::Keyboard && m_textInput->active)
 		return;
+
+	// Check if press was consumed by something else
+	if (!m_buttonPressed[buttonCode])
+		return;
+
+	m_timeSinceButtonReleased[buttonCode] = 0;
+
 
 	lua_getglobal(m_lua, "button_released");
 	if (lua_isfunction(m_lua, -1))
@@ -1113,16 +1268,18 @@ void MultiplayerScreen::m_OnButtonReleased(Input::Button buttonCode)
 		lua_pushnumber(m_lua, (int32)buttonCode);
 		if (lua_pcall(m_lua, 1, 0, 0) != 0)
 		{
-			Logf("Lua error on button_released: %s", Logger::Error, lua_tostring(m_lua, -1));
+			Logf("Lua error on button_released: %s", Logger::Severity::Error, lua_tostring(m_lua, -1));
 			g_gameWindow->ShowMessageBox("Lua Error on button_released", lua_tostring(m_lua, -1), 0);
 		}
 	}
 	lua_settop(m_lua, 0);
+
+	m_buttonPressed[buttonCode] = false;
 }
 
 void MultiplayerScreen::m_OnMouseScroll(int32 steps)
 {
-	if (IsSuspended())
+	if (IsSuspended() || m_chatOverlay->IsOpen() || m_settDiag.IsActive())
 		return;
 
 	lua_getglobal(m_lua, "mouse_scroll");
@@ -1131,7 +1288,7 @@ void MultiplayerScreen::m_OnMouseScroll(int32 steps)
 		lua_pushnumber(m_lua, steps);
 		if (lua_pcall(m_lua, 1, 0, 0) != 0)
 		{
-			Logf("Lua error on advance_selection: %s", Logger::Error, lua_tostring(m_lua, -1));
+			Logf("Lua error on advance_selection: %s", Logger::Severity::Error, lua_tostring(m_lua, -1));
 			g_gameWindow->ShowMessageBox("Lua Error on mouse_scroll", lua_tostring(m_lua, -1), 0);
 		}
 	}
@@ -1154,14 +1311,19 @@ int MultiplayerScreen::lSongSelect(lua_State* L)
 
 int MultiplayerScreen::lSettings(lua_State* L)
 {
-	m_suspended = true;
-	g_application->AddTickable(SettingsScreen::Create());
+	if (m_settDiag.IsActive())
+		return 0;
+	m_settDiag.Open();
 	return 0;
 }
 
 void MultiplayerScreen::OnRestore()
 {
 	m_suspended = false;
+	m_previewPlayer.Restore();
+
+    // Restart nuklear if we turned it off during suspend
+    m_chatOverlay->InitNuklearIfNeeded();
 
 	// If we disconnected while playing or selecting wait until we get back before exiting
 	/*if (!m_tcp.IsOpen())
@@ -1211,6 +1373,7 @@ bool MultiplayerScreen::AsyncLoad()
 	m_mapDatabase->OnDatabaseUpdateStarted.Add(this, &MultiplayerScreen::m_onDatabaseUpdateStart);
 	m_mapDatabase->OnDatabaseUpdateDone.Add(this, &MultiplayerScreen::m_onDatabaseUpdateDone);
 	m_mapDatabase->OnDatabaseUpdateProgress.Add(this, &MultiplayerScreen::m_onDatabaseUpdateProgress);
+	m_mapDatabase->SetChartUpdateBehavior(g_gameConfig.GetBool(GameConfigKeys::TransferScoresOnChartUpdate));
 	m_mapDatabase->FinishInit();
 
 	m_mapDatabase->AddSearchPath(g_gameConfig.GetString(GameConfigKeys::SongFolder));
@@ -1244,6 +1407,8 @@ bool MultiplayerScreen::AsyncFinalize()
 	if (m_lua == nullptr)
 		return false;
 
+	m_previewParams = {"", 0, 0};
+
 	// Install the socket functions and call the lua init
 	m_tcp.PushFunctions(m_lua);
 
@@ -1251,6 +1416,8 @@ bool MultiplayerScreen::AsyncFinalize()
 	g_input.OnButtonReleased.Add(this, &MultiplayerScreen::m_OnButtonReleased);
 	g_gameWindow->OnMouseScroll.Add(this, &MultiplayerScreen::m_OnMouseScroll);
 	g_gameWindow->OnMousePressed.Add(this, &MultiplayerScreen::MousePressed);
+
+	m_settDiag.onSongOffsetChange.Add(this, &MultiplayerScreen::m_SetCurrentChartOffset);
 
 	m_bindable = new LuaBindable(m_lua, "mpScreen");
 	m_bindable->AddFunction("Exit", this, &MultiplayerScreen::lExit);
@@ -1289,16 +1456,29 @@ bool MultiplayerScreen::AsyncFinalize()
 		m_authenticate();
 	}
 
+	m_chatOverlay = new ChatOverlay(this);
+	m_chatOverlay->Init();
+
 	return true;
+}
+
+void MultiplayerScreen::m_SetCurrentChartOffset(int newValue)
+{
+	if (ChartIndex* chart = GetCurrentSelectedChart())
+	{
+		chart->custom_offset = newValue;
+		m_mapDatabase->UpdateChartOffset(chart);
+	}
 }
 
 void MultiplayerScreen::OnSuspend()
 {
 	m_suspended = true;
+	m_previewPlayer.Pause();
 	m_mapDatabase->StopSearching();
 
 	if (m_lockMouse)
-		m_lockMouse.Release();
+		m_lockMouse.reset();
 }
 
 bool MultiplayerScreen::IsSyncing()
@@ -1330,7 +1510,7 @@ int MultiplayerScreen::lSaveUsername(lua_State* L)
 		return 0;
 
 	// Update username
-	m_userName = Utility::ConvertToUTF8(m_textInput->input);
+	m_userName = m_textInput->input;
 	g_gameConfig.Set(GameConfigKeys::MultiplayerUsername, m_userName);
 	m_textInput->SetActive(false);
 
@@ -1346,13 +1526,14 @@ int MultiplayerScreen::lJoinWithPassword(lua_State* L)
 {
 	if (m_screenState == MultiplayerScreenState::ROOM_LIST)
 	{
-		Log("In screen", Logger::Error);
+		Log("In screen", Logger::Severity::Error);
 		m_roomToJoin = luaL_checkstring(L, 2);
 		m_textInput->Reset();
 		m_textInput->SetActive(true);
 		
 
 		m_screenState = MultiplayerScreenState::JOIN_PASSWORD;
+		m_chatOverlay->DisableOpeningChat();
 		lua_pushstring(m_lua, "passwordScreen");
 		lua_setglobal(m_lua, "screenState");
 
@@ -1364,7 +1545,7 @@ int MultiplayerScreen::lJoinWithPassword(lua_State* L)
 	nlohmann::json packet;
 	packet["topic"] = "server.room.join";
 	packet["id"] = m_roomToJoin;
-	packet["password"] = Utility::ConvertToUTF8(m_textInput->input);
+	packet["password"] = m_textInput->input;
 	m_tcp.SendJSON(packet);
 
 	return 0;
@@ -1374,12 +1555,13 @@ int MultiplayerScreen::lNewRoomStep(lua_State* L)
 {
 	if (m_screenState == MultiplayerScreenState::ROOM_LIST)
 	{
+		m_chatOverlay->DisableOpeningChat();
 		m_screenState = MultiplayerScreenState::NEW_ROOM_NAME;
 		lua_pushstring(m_lua, "newRoomName");
 		lua_setglobal(m_lua, "screenState");
 
 		m_textInput->Reset();
-		m_textInput->input = Utility::ConvertToWString(m_userName + "'s Room");
+		m_textInput->input = m_userName + "'s Room";
 		m_textInput->SetActive(true);
 	}
 	else if (m_screenState == MultiplayerScreenState::NEW_ROOM_NAME)
@@ -1388,7 +1570,7 @@ int MultiplayerScreen::lNewRoomStep(lua_State* L)
 		{
 			return 0;
 		}
-		m_newRoomName = Utility::ConvertToUTF8(m_textInput->input);
+		m_newRoomName = m_textInput->input;
 		m_textInput->Reset();
 
 		m_screenState = MultiplayerScreenState::NEW_ROOM_PASSWORD;
@@ -1398,12 +1580,65 @@ int MultiplayerScreen::lNewRoomStep(lua_State* L)
 	}
 	else if (m_screenState == MultiplayerScreenState::NEW_ROOM_PASSWORD)
 	{
+		m_chatOverlay->EnableOpeningChat();
 		nlohmann::json packet;
 		packet["topic"] = "server.room.new";
 		packet["name"] = m_newRoomName;
-		packet["password"] = Utility::ConvertToUTF8(m_textInput->input);
+		packet["password"] = m_textInput->input;
 		m_tcp.SendJSON(packet);
 		m_textInput->Reset();
 	}
 	return 0;
+}
+
+// This is basically copied from song-select
+void MultiplayerScreen::m_updatePreview(ChartIndex* diff, bool mapChanged)
+{
+	String mapRootPath = diff->path.substr(0, diff->path.find_last_of(Path::sep));
+
+	// Set current preview audio
+	String audioPath = mapRootPath + Path::sep + diff->preview_file;
+
+	PreviewParams params = {audioPath, static_cast<uint32>(diff->preview_offset), static_cast<uint32>(diff->preview_length)};
+
+	/* A lot of pre-effected charts use different audio files for each difficulty; these
+	 * files differ only in their effects, so the preview offset and duration remain the
+	 * same. So, if the audio file is different but offset and duration equal the previously
+	 * playing preview, we know that it was just a change to a different difficulty of the
+	 * same chart. To avoid restarting the preview when changing difficulty, we say that
+	 * charts with this setup all have the same preview.
+	 *
+	 * Note that if the chart is using the `previewfile` field, then all this is ignored. */
+	bool newPreview = mapChanged ? m_previewParams != params : (m_previewParams.duration != params.duration || m_previewParams.offset != params.offset);
+
+	if (newPreview)
+	{
+		Ref<AudioStream> previewAudio = g_audio->CreateStream(audioPath);
+		if (previewAudio)
+		{
+			previewAudio->SetPosition(diff->preview_offset);
+
+			m_previewPlayer.FadeTo(previewAudio, diff->preview_offset);
+
+			m_previewParams = params;
+		}
+		else
+		{
+			params = {"", 0, 0};
+
+			Logf("Failed to load preview audio from [%s]", Logger::Severity::Warning, audioPath);
+			if (m_previewParams != params)
+				m_previewPlayer.FadeTo(Ref<AudioStream>());
+		}
+
+		m_previewParams = params;
+	}
+}
+
+void MultiplayerScreen::m_stopPreview()
+{
+	PreviewParams params = {"", 0, 0};
+	if (m_previewParams != params)
+		m_previewPlayer.FadeTo(Ref<AudioStream>());
+
 }

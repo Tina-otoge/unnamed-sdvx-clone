@@ -1,12 +1,11 @@
 #include "stdafx.h"
-#include "SkinHttp.hpp"
-#include "lua.hpp"
 #include "Shared/LuaBindable.hpp"
+#include "SkinHttp.hpp"
 
 void SkinHttp::m_requestLoop()
 {
 	while (m_running)
-	{		
+	{
 		m_mutex.lock(); ///TODO: use semaphore?
 		if (m_requests.size() > 0)
 		{
@@ -87,7 +86,7 @@ void SkinHttp::m_PushResponse(lua_State * L, const cpr::Response & r)
 		pushString(i.first, i.second);
 	}
 	lua_settable(L, -3);
-	
+
 }
 
 SkinHttp::SkinHttp()
@@ -181,7 +180,7 @@ void SkinHttp::ProcessCallbacks()
 			m_PushResponse(cr.L, cr.r);
 			if (lua_pcall(cr.L, 1, 0, 0) != 0)
 			{
-				Logf("Lua error on calling http callback: %s", Logger::Error, lua_tostring(cr.L, -1));
+				Logf("Lua error on calling http callback: %s", Logger::Severity::Error, lua_tostring(cr.L, -1));
 			}
 			lua_settop(cr.L, 0);
 			luaL_unref(cr.L, LUA_REGISTRYINDEX, cr.callback);

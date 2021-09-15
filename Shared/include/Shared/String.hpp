@@ -37,7 +37,7 @@ public:
 	void ToUpper();
 	bool Split(const StringBase& delim, StringBase* l, StringBase* r) const;
 	bool SplitLast(const StringBase& delim, StringBase* l, StringBase* r) const;
-	Vector<StringBase> Explode(const StringBase& delim) const;
+	Vector<StringBase> Explode(const StringBase& delim, bool keepEmpty = true) const;
 	void TrimFront(T c);
 	void TrimBack(T c);
 	void Trim(T c = ' ');
@@ -64,21 +64,28 @@ namespace Utility
 	}
 	const wchar_t* WSprintfArgFilter(const WString& in);
 
-	// Helper function that perorms the c standard sprintf but returns a managed object instead
+	template<int N, typename... Args>
+	void BufferSprintf(char (&buffer)[N], const char* fmt, Args... args)
+	{
+#ifdef _WIN32
+		sprintf_s(buffer, N, fmt, SprintfArgFilter(args)...);
+#else
+		snprintf(buffer, N-1, fmt, SprintfArgFilter(args)...);
+#endif
+	}
+
+	// Helper function that performs the c standard sprintf but returns a managed object instead
 	// Max Output length = 8000
 	template<typename... Args>
 	String Sprintf(const char* fmt, Args... args)
 	{
 		static char buffer[8000];
-#ifdef _WIN32
-		sprintf_s(buffer, fmt, SprintfArgFilter(args)...);
-#else
-		snprintf(buffer, 8000-1, fmt, SprintfArgFilter(args)...);
-#endif
+		BufferSprintf(buffer, fmt, args...);
+
 		return String(buffer);
 	}
 
-	// Helper function that perorms the c standard sprintf but returns a managed object instead
+	// Helper function that performs the c standard sprintf but returns a managed object instead
 	// Max Output length = 8000
 	template<typename... Args>
 	WString WSprintf(const wchar_t* fmt, Args... args)
@@ -140,7 +147,7 @@ template<typename T>
 bool StringBase<T>::Split(const StringBase& delim, StringBase* l, StringBase* r) const
 {
 	size_t f = find(delim);
-	if(f == -1)
+	if(f == (size_t)-1)
 		return false;
 	StringBase selfCopy = *this;
 	if(r)
@@ -172,7 +179,7 @@ bool StringBase<T>::SplitLast(const StringBase& delim, StringBase* l, StringBase
 	return true;
 }
 template<typename T>
-Vector<StringBase<T>> StringBase<T>::Explode(const StringBase& delim) const
+Vector<StringBase<T>> StringBase<T>::Explode(const StringBase& delim, bool keepEmpty /*=true*/) const
 {
 	String a, b;
 	Vector<StringBase> res;
@@ -184,16 +191,19 @@ Vector<StringBase<T>> StringBase<T>::Explode(const StringBase& delim) const
 
 	do
 	{
-		res.Add(a);
+		if(keepEmpty || !a.empty())
+			res.Add(a);
+
 	} while(b.Split(delim, &a, &b));
-	res.Add(b);
+
+	if (keepEmpty || !b.empty())
+		res.Add(b);
 
 	return res;
 }
 template<typename T>
 void StringBase<T>::TrimFront(T c)
 {
-	StringBase& s = (*this);
 	while(length() > 0)
 	{
 		if(front() != c)
@@ -204,7 +214,6 @@ void StringBase<T>::TrimFront(T c)
 template<typename T>
 void StringBase<T>::TrimBack(T c)
 {
-	StringBase& s = (*this);
 	while(length() > 0)
 	{
 		if(back() != c)

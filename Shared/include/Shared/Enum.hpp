@@ -18,18 +18,19 @@ public:
 		String src = enumInit;
 		size_t split = 0;
 		size_t idLast = 0;
+		size_t badVal = -1;
 		EnumType e;
-		for(uint32_t i = 0; split != -1 && !src.empty(); i++)
+		for(uint32_t i = 0; split != badVal && !src.empty(); i++)
 		{
 			split = src.find(',');
-			String seg = (split == -1) ? src : src.substr(0, split);
+			String seg = (split == badVal) ? src : src.substr(0, split);
 			size_t assignment = seg.find("=");
-			if(assignment != -1)
+			if(assignment != badVal)
 			{
 					String valueStr = seg.substr(assignment + 1);
 					seg = seg.substr(0, assignment);
 					size_t charValue = valueStr.find('\'');
-					if(charValue != -1) // Probably a char value
+					if(charValue != badVal) // Probably a char value
 						idLast = (size_t)valueStr[charValue + 1];
 					else // Hex or decimal value
 						idLast = strtol(*valueStr, NULL, 0);
@@ -38,24 +39,23 @@ public:
 			seg.Trim();
 			names.Add(e, seg);
 			rev.Add(seg, e);
-			src = (split == -1) ? src : src.substr(split + 1);
+			src = (split == badVal) ? src : src.substr(split + 1);
 		}
 	}
-	auto begin()
-	{
-		return names.begin();
-	}
-	auto end()
-	{
-		return names.end();
-	}
-	const String& ToString(EnumType e)
+
+	inline auto begin() { return names.begin(); }
+	inline auto begin() const { return names.begin(); }
+	inline auto end() { return names.end(); }
+	inline auto end() const { return names.end(); }
+
+	const String& ToString(EnumType e) const
 	{
 		static String dummy = "<invalid>";
 		auto it = names.find(e);
 		return it == names.end() ? dummy : it->second;
 	}
-	EnumType FromString(const String& str)
+
+	EnumType FromString(const String& str) const
 	{
 		auto it = rev.find(str);
 		return it == rev.end() ? (EnumType)-1 : it->second;
@@ -89,11 +89,12 @@ public:
 	{
 		uint32 result = 0;
 		size_t next = 0;
-		while(next != -1)
+		size_t badVal = -1;
+		while(next != badVal)
 		{
 			next = str.find('|');
 			String current = str;
-			if(next != -1)
+			if(next != badVal)
 			{
 				current = str.substr(0, next);
 				str = str.substr(next + 1);
@@ -170,7 +171,7 @@ struct Enum_##_n\
 		and allows string<=>value conversions for multiple flags at the same time
 */
 #define DefineBitflagEnum(_n, ...) enum class _n : uint32 { __VA_ARGS__, _Length };\
-DeclareBitwiseEnumOps(_n);\
+DeclareBitwiseEnumOps(_n)\
 struct Enum_##_n\
 {\
 	typedef _n EnumType;\
