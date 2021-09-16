@@ -72,7 +72,6 @@ void Input::Init(Graphics::Window& wnd)
 			if (memcmp(deviceId.data(), id.data, 16) == 0)
 			{
 				deviceIndex = i;
-				break;
 			}
 		}
 
