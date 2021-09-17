@@ -71,6 +71,9 @@ void Input::Init(Graphics::Window& wnd)
 			auto id = SDL_JoystickGetDeviceGUID(i);
 			if (memcmp(deviceId.data(), id.data, 16) == 0)
 			{
+				Log("Device");
+				Log(deviceId.data());
+				Log(id.data);
 				deviceIndex = i;
 			}
 		}
